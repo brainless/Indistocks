@@ -60,7 +60,6 @@ pub fn init_db() -> Result<Connection> {
 
         CREATE TABLE IF NOT EXISTS nse_downloads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            download_type TEXT NOT NULL,
             symbol TEXT,
             from_date INTEGER NOT NULL,
             to_date INTEGER NOT NULL,
@@ -69,11 +68,11 @@ pub fn init_db() -> Result<Connection> {
             status TEXT NOT NULL,
             error_message TEXT,
             downloaded_at INTEGER NOT NULL,
-            UNIQUE(download_type, from_date, to_date, symbol)
+            UNIQUE(symbol, from_date, to_date)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_nse_downloads_type
-        ON nse_downloads(download_type, downloaded_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_nse_downloads_downloaded_at
+        ON nse_downloads(downloaded_at DESC);
         "
     )?;
 

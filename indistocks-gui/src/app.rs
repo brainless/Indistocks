@@ -1,4 +1,4 @@
-use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, DownloadType, get_downloaded_files_for_symbol, validate_download_records, get_symbols_with_downloads, get_nse_symbols_paginated};
+use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, get_downloaded_files_for_symbol, validate_download_records, get_symbols_with_downloads, get_nse_symbols_paginated};
 use crate::ui::{top_nav, sidebar, main_content, settings};
 use chrono::NaiveDate;
 use std::sync::mpsc::Receiver;
@@ -16,9 +16,7 @@ pub struct IndistocksApp {
     pub recently_viewed: Vec<RecentlyViewed>,
     pub search_query: String,
     pub settings_error_symbols: Vec<String>,
-    pub settings_success_message: Option<String>,
     // NSE Downloads fields
-    pub download_type: DownloadType,
     pub download_symbol: String,
     pub download_all_symbols: bool,
     pub download_from_date: String,
@@ -60,8 +58,6 @@ impl IndistocksApp {
             recently_viewed,
             search_query: String::new(),
             settings_error_symbols: Vec::new(),
-            settings_success_message: None,
-            download_type: DownloadType::EquityBhavcopy,
             download_symbol: String::new(),
             download_all_symbols: false,
             download_from_date: String::new(),

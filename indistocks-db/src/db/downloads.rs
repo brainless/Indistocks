@@ -10,29 +10,11 @@ use zip::ZipArchive;
 
 
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum DownloadType {
-    EquityBhavcopy,
-    DeliveryBhavcopy,
-    IndicesBhavcopy,
-    Historical,
-}
 
-impl std::fmt::Display for DownloadType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DownloadType::EquityBhavcopy => write!(f, "Equity Bhavcopy"),
-            DownloadType::DeliveryBhavcopy => write!(f, "Delivery Bhavcopy"),
-            DownloadType::IndicesBhavcopy => write!(f, "Indices Bhavcopy"),
-            DownloadType::Historical => write!(f, "Historical Data"),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct DownloadRecord {
     pub id: i64,
-    pub download_type: String,
     pub symbol: Option<String>,
     pub from_date: i64,
     pub to_date: i64,
@@ -119,156 +101,7 @@ fn extract_zip(file_path: &PathBuf, extract_to: &PathBuf) -> Result<(), Box<dyn 
     Ok(())
 }
 
-pub fn download_equity_bhavcopy(from_date: NaiveDate, to_date: NaiveDate) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let client = create_http_client();
-    let downloads_dir = get_downloads_dir();
-    let mut downloaded_files = Vec::new();
 
-    let mut current_date = from_date;
-    while current_date <= to_date {
-        let year = current_date.year();
-        let month = current_date.month();
-        let day = current_date.day();
-
-        let date_str = format!("{:02}{:02}{:04}", day, month % 100, year);
-        let archive_url = "https://nsearchives.nseindia.com";
-
-        // Check if new format (after 8 July 2024)
-        let cutoff = NaiveDate::from_ymd_opt(2024, 7, 8).unwrap();
-        let url = if current_date > cutoff {
-            format!("{}/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", archive_url, date_str)
-        } else {
-            let month_name = match month {
-                1 => "JAN", 2 => "FEB", 3 => "MAR", 4 => "APR", 5 => "MAY", 6 => "JUN",
-                7 => "JUL", 8 => "AUG", 9 => "SEP", 10 => "OCT", 11 => "NOV", 12 => "DEC",
-                _ => "JAN",
-            };
-            format!("{}/content/historical/EQUITIES/{}/{}/cm{}bhav.csv.zip", archive_url, year, month_name, date_str)
-        };
-
-        let year_dir = downloads_dir.join(year.to_string());
-        let month_dir = year_dir.join(format!("{:02}", month));
-        fs::create_dir_all(&month_dir)?;
-
-        let zip_file_name = format!("equity_bhavcopy_{}.csv.zip", date_str);
-        let zip_path = month_dir.join(&zip_file_name);
-
-        match download_file_with_retry(&client, &url, &zip_path, 3) {
-            Ok(_) => {
-                // Extract ZIP
-                let extract_dir = month_dir.join("extracted");
-                fs::create_dir_all(&extract_dir)?;
-                if let Err(e) = extract_zip(&zip_path, &extract_dir) {
-                    eprintln!("Failed to extract {}: {}", zip_file_name, e);
-                    continue;
-                }
-
-                // Find the CSV file
-                let csv_files: Vec<_> = fs::read_dir(&extract_dir)?
-                    .filter_map(|entry| entry.ok())
-                    .filter(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("csv"))
-                    .collect();
-
-                if let Some(csv_entry) = csv_files.first() {
-                    let csv_path = csv_entry.path();
-                    let final_csv_name = format!("equity_bhavcopy_{}.csv", date_str);
-                    let final_csv_path = month_dir.join(&final_csv_name);
-                    fs::rename(&csv_path, &final_csv_path)?;
-
-                    downloaded_files.push(final_csv_name);
-                }
-
-                // Clean up
-                fs::remove_file(&zip_path)?;
-                fs::remove_dir_all(&extract_dir)?;
-            }
-            Err(e) => {
-                eprintln!("Failed to download {}: {}", date_str, e);
-            }
-        }
-
-        current_date = current_date.succ_opt().unwrap();
-    }
-
-    Ok(downloaded_files)
-}
-
-// Similar functions for other types would go here
-// For brevity, I'll implement placeholders
-
-pub fn download_delivery_bhavcopy(from_date: NaiveDate, to_date: NaiveDate) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let client = create_http_client();
-    let downloads_dir = get_downloads_dir();
-    let mut downloaded_files = Vec::new();
-
-    let mut current_date = from_date;
-    while current_date <= to_date {
-        let year = current_date.year();
-        let month = current_date.month();
-        let day = current_date.day();
-
-        let date_str = format!("{:02}{:02}{:04}", day, month % 100, year);
-        let archive_url = "https://nsearchives.nseindia.com";
-        let url = format!("{}/products/content/sec_bhavdata_full_{}.csv", archive_url, date_str);
-
-        let year_dir = downloads_dir.join(year.to_string());
-        let month_dir = year_dir.join(format!("{:02}", month));
-        fs::create_dir_all(&month_dir)?;
-
-        let file_name = format!("delivery_bhavcopy_{}.csv", date_str);
-        let file_path = month_dir.join(&file_name);
-
-        match download_file_with_retry(&client, &url, &file_path, 3) {
-            Ok(_) => {
-                downloaded_files.push(file_name);
-            }
-            Err(e) => {
-                eprintln!("Failed to download {}: {}", date_str, e);
-            }
-        }
-
-        current_date = current_date.succ_opt().unwrap();
-    }
-
-    Ok(downloaded_files)
-}
-
-pub fn download_indices_bhavcopy(from_date: NaiveDate, to_date: NaiveDate) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let client = create_http_client();
-    let downloads_dir = get_downloads_dir();
-    let mut downloaded_files = Vec::new();
-
-    let mut current_date = from_date;
-    while current_date <= to_date {
-        let year = current_date.year();
-        let month = current_date.month();
-        let day = current_date.day();
-
-        let date_str = format!("{:02}{:02}{:04}", day, month % 100, year);
-        let archive_url = "https://nsearchives.nseindia.com";
-        let url = format!("{}/content/indices/ind_close_all_{}.csv", archive_url, date_str);
-
-        let year_dir = downloads_dir.join(year.to_string());
-        let month_dir = year_dir.join(format!("{:02}", month));
-        fs::create_dir_all(&month_dir)?;
-
-        let file_name = format!("indices_bhavcopy_{}.csv", date_str);
-        let file_path = month_dir.join(&file_name);
-
-        match download_file_with_retry(&client, &url, &file_path, 3) {
-            Ok(_) => {
-                downloaded_files.push(file_name);
-            }
-            Err(e) => {
-                eprintln!("Failed to download {}: {}", date_str, e);
-            }
-        }
-
-        current_date = current_date.succ_opt().unwrap();
-    }
-
-    Ok(downloaded_files)
-}
 
 pub fn download_historical_data(symbol: &str, from_date: NaiveDate, to_date: NaiveDate) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let client = create_http_client();
@@ -341,15 +174,14 @@ pub fn download_historical_data(symbol: &str, from_date: NaiveDate, to_date: Nai
     Ok(downloaded_files)
 }
 
-pub fn save_download_record(conn: &Connection, download_type: &str, symbol: Option<&str>, from_date: i64, to_date: i64, file_path: &str, status: &str, error_message: Option<&str>) -> Result<i64, Box<dyn std::error::Error>> {
+pub fn save_download_record(conn: &Connection, symbol: Option<&str>, from_date: i64, to_date: i64, file_path: &str, status: &str, error_message: Option<&str>) -> Result<i64, Box<dyn std::error::Error>> {
     let now = Utc::now().timestamp();
     let file_size = fs::metadata(file_path).ok().map(|m| m.len() as i64);
 
     conn.execute(
-        "INSERT INTO nse_downloads (download_type, symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO nse_downloads (symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
-            download_type,
             symbol,
             from_date,
             to_date,
@@ -366,22 +198,21 @@ pub fn save_download_record(conn: &Connection, download_type: &str, symbol: Opti
 
 pub fn get_download_records(conn: &Connection) -> Result<Vec<DownloadRecord>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
-        "SELECT id, download_type, symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at
+        "SELECT id, symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at
          FROM nse_downloads ORDER BY downloaded_at DESC LIMIT 50"
     )?;
 
     let records = stmt.query_map([], |row| {
         Ok(DownloadRecord {
             id: row.get(0)?,
-            download_type: row.get(1)?,
-            symbol: row.get(2)?,
-            from_date: row.get(3)?,
-            to_date: row.get(4)?,
-            file_path: row.get(5)?,
-            file_size: row.get(6)?,
-            status: row.get(7)?,
-            error_message: row.get(8)?,
-            downloaded_at: row.get(9)?,
+            symbol: row.get(1)?,
+            from_date: row.get(2)?,
+            to_date: row.get(3)?,
+            file_path: row.get(4)?,
+            file_size: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            downloaded_at: row.get(8)?,
         })
     })?.collect::<Result<Vec<_>, _>>()?;
 

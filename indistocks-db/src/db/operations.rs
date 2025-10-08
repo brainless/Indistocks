@@ -95,7 +95,7 @@ pub fn get_nse_symbols_paginated(conn: &Connection, limit: Option<usize>, offset
 pub fn get_downloaded_files_for_symbol(conn: &Connection, symbol: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT file_path FROM nse_downloads
-         WHERE download_type = 'historical' AND symbol = ?
+         WHERE symbol = ?
          ORDER BY from_date"
     )?;
     let files = stmt.query_map([symbol], |row| row.get(0))?.collect::<Result<Vec<String>>>()?;
@@ -105,7 +105,7 @@ pub fn get_downloaded_files_for_symbol(conn: &Connection, symbol: &str) -> Resul
 pub fn get_symbols_with_downloads(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT symbol FROM nse_downloads
-         WHERE download_type = 'historical' AND symbol IS NOT NULL
+         WHERE symbol IS NOT NULL
          ORDER BY symbol"
     )?;
     let symbols = stmt.query_map([], |row| row.get(0))?.collect::<Result<Vec<String>>>()?;
@@ -280,17 +280,16 @@ pub fn populate_demo_data(conn: &Connection) -> Result<()> {
 
 pub fn save_nse_download(conn: &Connection, download: &NseDownload) -> Result<i64> {
     let now = Utc::now().timestamp();
-    
+
     conn.execute(
-        "INSERT INTO nse_downloads 
-         (download_type, symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT(download_type, from_date, to_date, symbol) 
-         DO UPDATE SET file_path = excluded.file_path, file_size = excluded.file_size, 
-                      status = excluded.status, error_message = excluded.error_message, 
+        "INSERT INTO nse_downloads
+         (symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(symbol, from_date, to_date)
+         DO UPDATE SET file_path = excluded.file_path, file_size = excluded.file_size,
+                      status = excluded.status, error_message = excluded.error_message,
                       downloaded_at = excluded.downloaded_at",
         params![
-            download.download_type,
             download.symbol,
             download.from_date,
             download.to_date,
@@ -301,13 +300,13 @@ pub fn save_nse_download(conn: &Connection, download: &NseDownload) -> Result<i6
             now
         ],
     )?;
-    
+
     Ok(conn.last_insert_rowid())
 }
 
 pub fn get_nse_downloads(conn: &Connection, limit: usize) -> Result<Vec<NseDownload>> {
     let mut stmt = conn.prepare(
-        "SELECT id, download_type, symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at
+        "SELECT id, symbol, from_date, to_date, file_path, file_size, status, error_message, downloaded_at
          FROM nse_downloads
          ORDER BY downloaded_at DESC
          LIMIT ?1"
@@ -316,15 +315,14 @@ pub fn get_nse_downloads(conn: &Connection, limit: usize) -> Result<Vec<NseDownl
     let items = stmt.query_map(params![limit], |row| {
         Ok(NseDownload {
             id: row.get(0)?,
-            download_type: row.get(1)?,
-            symbol: row.get(2)?,
-            from_date: row.get(3)?,
-            to_date: row.get(4)?,
-            file_path: row.get(5)?,
-            file_size: row.get(6)?,
-            status: row.get(7)?,
-            error_message: row.get(8)?,
-            downloaded_at: row.get(9)?,
+            symbol: row.get(1)?,
+            from_date: row.get(2)?,
+            to_date: row.get(3)?,
+            file_path: row.get(4)?,
+            file_size: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            downloaded_at: row.get(8)?,
         })
     })?;
 

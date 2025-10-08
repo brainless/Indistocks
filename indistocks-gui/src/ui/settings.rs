@@ -1,5 +1,5 @@
 use crate::app::{IndistocksApp, View};
-use indistocks_db::{save_nse_symbols_with_names, download_equity_bhavcopy, download_delivery_bhavcopy, download_indices_bhavcopy, download_historical_data, get_nse_symbols, DownloadType};
+use indistocks_db::{save_nse_symbols_with_names, download_historical_data, get_nse_symbols};
 use chrono::NaiveDate;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
@@ -52,7 +52,6 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("✕").on_hover_text("Close").clicked() {
                     app.current_view = View::Home;
-                    app.settings_success_message = None;
                     app.settings_error_symbols.clear();
                 }
             });
@@ -147,30 +146,14 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
         ui.heading("NSE Downloads");
         ui.add_space(10.0);
 
-        // Download Type
-        ui.label("Download Type:");
-        egui::ComboBox::from_label("")
-            .selected_text(format!("{}", app.download_type))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut app.download_type, DownloadType::EquityBhavcopy, "Equity Bhavcopy");
-                ui.selectable_value(&mut app.download_type, DownloadType::DeliveryBhavcopy, "Delivery Bhavcopy");
-                ui.selectable_value(&mut app.download_type, DownloadType::IndicesBhavcopy, "Indices Bhavcopy");
-                ui.selectable_value(&mut app.download_type, DownloadType::Historical, "Historical Data");
-            });
+        ui.checkbox(&mut app.download_all_symbols, "Download for all saved NSE symbols");
+        ui.add_space(5.0);
 
-        ui.add_space(10.0);
-
-        // Symbol input (only for Historical)
-        if matches!(app.download_type, DownloadType::Historical) {
-            ui.checkbox(&mut app.download_all_symbols, "Download for all saved NSE symbols");
-            ui.add_space(5.0);
-
-            if !app.download_all_symbols {
-                ui.label("Symbol:");
-                ui.text_edit_singleline(&mut app.download_symbol);
-            }
-            ui.add_space(10.0);
+        if !app.download_all_symbols {
+            ui.label("Symbol:");
+            ui.text_edit_singleline(&mut app.download_symbol);
         }
+        ui.add_space(10.0);
 
         // Date inputs
         ui.horizontal(|ui| {
@@ -196,12 +179,11 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
                     app.download_status = String::new();
                     app.downloaded_files.clear();
 
-                    let download_type = app.download_type.clone();
                     let download_all_symbols = app.download_all_symbols;
                     let download_symbol = app.download_symbol.clone();
 
                     // Get symbols here if needed for all symbols download
-                    let symbols = if matches!(download_type, DownloadType::Historical) && download_all_symbols {
+                    let symbols = if download_all_symbols {
                         get_nse_symbols(&app.db_conn).unwrap_or_default()
                     } else {
                         Vec::new()
@@ -211,58 +193,42 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
                     app.download_receiver = Some(rx);
 
                     thread::spawn(move || {
-                        let result = match download_type {
-                            DownloadType::EquityBhavcopy => {
-                                let _ = tx.send(DownloadMessage::Progress("Downloading equity bhavcopy...".to_string()));
-                                download_equity_bhavcopy(from_date, to_date)
-                            }
-                            DownloadType::DeliveryBhavcopy => {
-                                let _ = tx.send(DownloadMessage::Progress("Downloading delivery bhavcopy...".to_string()));
-                                download_delivery_bhavcopy(from_date, to_date)
-                            }
-                            DownloadType::IndicesBhavcopy => {
-                                let _ = tx.send(DownloadMessage::Progress("Downloading indices bhavcopy...".to_string()));
-                                download_indices_bhavcopy(from_date, to_date)
-                            }
-                            DownloadType::Historical => {
-                                if download_all_symbols {
-                                    let total = symbols.len();
-                                    let mut all_files = Vec::new();
-                                    let batch_size = 10;
+                        let result = if download_all_symbols {
+                            let total = symbols.len();
+                            let mut all_files = Vec::new();
+                            let batch_size = 10;
 
-                                    for (batch_idx, batch) in symbols.chunks(batch_size).enumerate() {
-                                        let batch_start = batch_idx * batch_size + 1;
-                                        let batch_end = (batch_start + batch.len() - 1).min(total);
-                                        let progress = format!("Downloading batch {}-{} of {}", batch_start, batch_end, total);
-                                        let _ = tx.send(DownloadMessage::Progress(progress));
+                            for (batch_idx, batch) in symbols.chunks(batch_size).enumerate() {
+                                let batch_start = batch_idx * batch_size + 1;
+                                let batch_end = (batch_start + batch.len() - 1).min(total);
+                                let progress = format!("Downloading batch {}-{} of {}", batch_start, batch_end, total);
+                                let _ = tx.send(DownloadMessage::Progress(progress));
 
-                                        let mut handles = Vec::new();
-                                        for symbol in batch {
-                                            let symbol_clone = symbol.clone();
-                                            let from = from_date;
-                                            let to = to_date;
-                                            let handle = thread::spawn(move || {
-                                                download_historical_data(&symbol_clone, from, to).map_err(|e| e.to_string())
-                                            });
-                                            handles.push((symbol, handle));
-                                        }
+                                let mut handles = Vec::new();
+                                for symbol in batch {
+                                    let symbol_clone = symbol.clone();
+                                    let from = from_date;
+                                    let to = to_date;
+                                    let handle = thread::spawn(move || {
+                                        download_historical_data(&symbol_clone, from, to).map_err(|e| e.to_string())
+                                    });
+                                    handles.push((symbol, handle));
+                                }
 
-                                        for (symbol, handle) in handles {
-                                            match handle.join() {
-                                                Ok(result) => match result {
-                                                    Ok(mut files) => all_files.append(&mut files),
-                                                    Err(e) => eprintln!("Failed for {}: {}", symbol, e),
-                                                },
-                                                Err(_) => eprintln!("Thread panicked for {}", symbol),
-                                            }
-                                        }
+                                for (symbol, handle) in handles {
+                                    match handle.join() {
+                                        Ok(result) => match result {
+                                            Ok(mut files) => all_files.append(&mut files),
+                                            Err(e) => eprintln!("Failed for {}: {}", symbol, e),
+                                        },
+                                        Err(_) => eprintln!("Thread panicked for {}", symbol),
                                     }
-                                    Ok(all_files)
-                                } else {
-                                    let _ = tx.send(DownloadMessage::Progress(format!("Downloading for {}", download_symbol)));
-                                    download_historical_data(&download_symbol, from_date, to_date)
                                 }
                             }
+                            Ok(all_files)
+                        } else {
+                            let _ = tx.send(DownloadMessage::Progress(format!("Downloading for {}", download_symbol)));
+                            download_historical_data(&download_symbol, from_date, to_date)
                         };
 
                         let _ = tx.send(DownloadMessage::Done(result.map_err(|e| e.to_string())));

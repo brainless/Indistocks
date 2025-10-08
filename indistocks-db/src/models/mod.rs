@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NseDownload {
     pub id: i64,
-    pub download_type: String,
     pub symbol: Option<String>,
     pub from_date: i64,
     pub to_date: i64,
