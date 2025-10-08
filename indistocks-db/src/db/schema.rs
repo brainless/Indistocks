@@ -52,6 +52,9 @@ pub fn init_db() -> Result<Connection> {
             FOREIGN KEY (symbol_id) REFERENCES nse_symbols(id) ON DELETE CASCADE
         );
 
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_recently_viewed_symbol_id
+        ON recently_viewed(symbol_id);
+
         CREATE INDEX IF NOT EXISTS idx_recently_viewed_time
         ON recently_viewed(viewed_at DESC);
 

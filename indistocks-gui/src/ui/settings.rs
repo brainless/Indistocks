@@ -1,5 +1,5 @@
 use crate::app::{IndistocksApp, View};
-use indistocks_db::{save_nse_symbols, download_equity_bhavcopy, download_delivery_bhavcopy, download_indices_bhavcopy, download_historical_data, get_nse_symbols, DownloadType};
+use indistocks_db::{save_nse_symbols_with_names, download_equity_bhavcopy, download_delivery_bhavcopy, download_indices_bhavcopy, download_historical_data, get_nse_symbols, DownloadType};
 use chrono::NaiveDate;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
@@ -10,7 +10,37 @@ pub enum DownloadMessage {
     Done(Result<Vec<String>, String>),
 }
 
+#[derive(Debug)]
+pub enum NseListMessage {
+    Done(Result<Vec<(String, String)>, String>),
+}
 
+fn download_nse_equity_list() -> Result<Vec<(String, String)>, String> {
+    let url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv";
+    let response = reqwest::blocking::get(url)
+        .map_err(|e| format!("Failed to download: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!("HTTP error: {}", response.status()));
+    }
+    
+    let content = response.text()
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+    
+    let mut rdr = csv::Reader::from_reader(content.as_bytes());
+    let mut symbols = Vec::new();
+    
+    for result in rdr.records() {
+        let record = result.map_err(|e| format!("CSV parse error: {}", e))?;
+        if let (Some(symbol), Some(name)) = (record.get(0), record.get(1)) {
+            if !symbol.trim().is_empty() && !name.trim().is_empty() {
+                symbols.push((symbol.trim().to_string(), name.trim().to_string()));
+            }
+        }
+    }
+    
+    Ok(symbols)
+}
 
 pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -46,60 +76,69 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
         ui.heading("NSE Stocks");
         ui.add_space(10.0);
 
-        ui.label("Enter NSE stock symbols (comma-separated):");
-        ui.add_space(5.0);
+        ui.label("Download the official NSE equity list to populate the database:");
+        ui.add_space(10.0);
 
-        let _textarea_response = ui.add_sized(
-            [600.0, 150.0],
-            egui::TextEdit::multiline(&mut app.settings_nse_symbols)
-                .hint_text("e.g., RELIANCE, TCS, INFY, HDFCBANK")
-        );
+        // Download button
+        if ui.button("Download NSE Equity list").clicked() && !app.is_downloading_nse_list {
+            app.is_downloading_nse_list = true;
+            app.nse_list_status = "Downloading...".to_string();
+
+            let (tx, rx) = mpsc::channel();
+            app.nse_list_receiver = Some(rx);
+
+            thread::spawn(move || {
+                let result = download_nse_equity_list();
+                let _ = tx.send(NseListMessage::Done(result));
+            });
+        }
 
         ui.add_space(10.0);
 
-        // Save button
-        if ui.button("Save").clicked() {
-            let symbols: Vec<String> = app.settings_nse_symbols
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+        // Show status
+        if !app.nse_list_status.is_empty() {
+            ui.label(&app.nse_list_status);
+        }
 
-            match save_nse_symbols(&app.db_conn, symbols) {
-                Ok((count, errors)) => {
-                    app.settings_error_symbols = errors;
-                    app.settings_success_message = Some(format!("Saved {} symbols successfully", count));
-                    app.refresh_recently_viewed();
+        // Check for messages
+        if let Some(ref rx) = app.nse_list_receiver {
+            match rx.try_recv() {
+                Ok(message) => {
+                    match message {
+                        NseListMessage::Done(result) => {
+                            app.is_downloading_nse_list = false;
+                            app.nse_list_receiver = None;
+                            match result {
+                                Ok(symbols) => {
+                                    match save_nse_symbols_with_names(&app.db_conn, symbols) {
+                                        Ok((count, errors)) => {
+                                            app.nse_list_status = format!("Downloaded and saved {} symbols successfully", count);
+                                            if !errors.is_empty() {
+                                                app.nse_list_status.push_str(&format!(" ({} errors)", errors.len()));
+                                            }
+                                            app.refresh_recently_viewed();
+                                        }
+                                        Err(e) => {
+                                            app.nse_list_status = format!("Error saving symbols: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    app.nse_list_status = format!("Error downloading: {}", e);
+                                }
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    app.settings_success_message = Some(format!("Error saving symbols: {}", e));
-                    app.settings_error_symbols.clear();
+                Err(TryRecvError::Empty) => {
+                    // Still downloading
+                }
+                Err(TryRecvError::Disconnected) => {
+                    app.is_downloading_nse_list = false;
+                    app.nse_list_receiver = None;
+                    app.nse_list_status = "Download thread disconnected".to_string();
                 }
             }
-        }
-
-        ui.add_space(10.0);
-
-        // Show success message
-        if let Some(ref msg) = app.settings_success_message {
-            ui.label(
-                egui::RichText::new(msg)
-                    .color(egui::Color32::from_rgb(0, 150, 0))
-            );
-        }
-
-        // Show error symbols
-        if !app.settings_error_symbols.is_empty() {
-            ui.add_space(10.0);
-            ui.label(
-                egui::RichText::new("Symbols with errors:")
-                    .color(egui::Color32::from_rgb(200, 0, 0))
-            );
-            ui.label(
-                egui::RichText::new(app.settings_error_symbols.join(", "))
-                    .color(egui::Color32::from_rgb(200, 0, 0))
-                    .small()
-            );
         }
 
         ui.add_space(30.0);

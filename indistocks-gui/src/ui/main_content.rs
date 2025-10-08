@@ -33,9 +33,6 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             app.plot_data.clear();
         }
     } else if !app.search_query.is_empty() {
-        // Update search results if query changed
-        app.update_search_results();
-
         // Show search results
         ui.heading("Search Results");
         ui.add_space(10.0);

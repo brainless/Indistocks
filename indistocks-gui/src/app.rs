@@ -1,4 +1,4 @@
-use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, DownloadType, get_downloaded_files_for_symbol, validate_download_records, get_symbols_with_downloads, get_nse_symbols_paginated};
+use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, DownloadType, get_downloaded_files_for_symbol, validate_download_records, get_symbols_with_downloads, get_nse_symbols_paginated};
 use crate::ui::{top_nav, sidebar, main_content, settings};
 use chrono::NaiveDate;
 use std::sync::mpsc::Receiver;
@@ -15,7 +15,6 @@ pub struct IndistocksApp {
     pub db_conn: Connection,
     pub recently_viewed: Vec<RecentlyViewed>,
     pub search_query: String,
-    pub settings_nse_symbols: String,
     pub settings_error_symbols: Vec<String>,
     pub settings_success_message: Option<String>,
     // NSE Downloads fields
@@ -29,6 +28,10 @@ pub struct IndistocksApp {
     pub downloaded_files: Vec<String>,
     pub is_downloading: bool,
     pub download_receiver: Option<Receiver<crate::ui::settings::DownloadMessage>>,
+    // NSE List Download
+    pub is_downloading_nse_list: bool,
+    pub nse_list_status: String,
+    pub nse_list_receiver: Option<Receiver<crate::ui::settings::NseListMessage>>,
     // Plotting
     pub selected_symbol: Option<String>,
     pub plot_data: Vec<(NaiveDate, f64)>, // date, close price
@@ -56,7 +59,6 @@ impl IndistocksApp {
             db_conn,
             recently_viewed,
             search_query: String::new(),
-            settings_nse_symbols: String::new(),
             settings_error_symbols: Vec::new(),
             settings_success_message: None,
             download_type: DownloadType::EquityBhavcopy,
@@ -69,6 +71,9 @@ impl IndistocksApp {
             downloaded_files: Vec::new(),
             is_downloading: false,
             download_receiver: None,
+            is_downloading_nse_list: false,
+            nse_list_status: String::new(),
+            nse_list_receiver: None,
             selected_symbol: None,
             plot_data: Vec::new(),
             last_search_query: String::new(),
@@ -119,6 +124,13 @@ impl IndistocksApp {
     pub fn load_plot_data(&mut self, symbol: &str) {
         println!("Loading plot data for symbol: {}", symbol);
         self.selected_symbol = Some(symbol.to_string());
+
+        // Record as recently viewed
+        if let Err(e) = record_recently_viewed(&self.db_conn, symbol) {
+            eprintln!("Failed to record recently viewed: {}", e);
+        }
+        self.refresh_recently_viewed();
+
         self.plot_data.clear();
 
         match get_downloaded_files_for_symbol(&self.db_conn, symbol) {
@@ -167,6 +179,14 @@ impl IndistocksApp {
 
 impl eframe::App for IndistocksApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Update search results if needed
+        self.update_search_results();
+
+        // If there's a selected symbol or search query, switch to Home view
+        if self.selected_symbol.is_some() || !self.search_query.is_empty() {
+            self.current_view = View::Home;
+        }
+
         // Top navigation
         egui::TopBottomPanel::top("top_nav").show(ctx, |ui| {
             top_nav::render(ui, self);

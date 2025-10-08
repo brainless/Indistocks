@@ -46,6 +46,35 @@ pub fn save_nse_symbols(conn: &Connection, symbols: Vec<String>) -> Result<(usiz
     Ok((saved_count, errors))
 }
 
+pub fn save_nse_symbols_with_names(conn: &Connection, symbols: Vec<(String, String)>) -> Result<(usize, Vec<String>)> {
+    let now = Utc::now().timestamp();
+    let mut saved_count = 0;
+    let mut errors = Vec::new();
+
+    for (symbol, name) in symbols {
+        let trimmed = symbol.trim().to_uppercase();
+        let trimmed_name = name.trim().to_string();
+
+        // Validate symbol format (alphanumeric and underscore only)
+        if !trimmed.chars().all(|c| c.is_alphanumeric() || c == '_') || trimmed.is_empty() {
+            errors.push(trimmed);
+            continue;
+        }
+
+        match conn.execute(
+            "INSERT INTO nse_symbols (symbol, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(symbol) DO UPDATE SET name = excluded.name, updated_at = ?3",
+            params![trimmed, trimmed_name, now],
+        ) {
+            Ok(_) => saved_count += 1,
+            Err(_) => errors.push(trimmed),
+        }
+    }
+
+    Ok((saved_count, errors))
+}
+
 pub fn get_nse_symbols(conn: &Connection) -> Result<Vec<String>> {
     get_nse_symbols_paginated(conn, None, None)
 }
@@ -160,6 +189,35 @@ fn scan_dir_for_missing_records(conn: &Connection, dir: &std::path::Path, existi
             }
         }
     }
+    Ok(())
+}
+
+pub fn record_recently_viewed(conn: &Connection, symbol: &str) -> Result<()> {
+    let now = Utc::now().timestamp();
+
+    // First, ensure the symbol exists in nse_symbols
+    let symbol_id: i64 = conn.query_row(
+        "SELECT id FROM nse_symbols WHERE symbol = ?1",
+        params![symbol],
+        |row| row.get(0),
+    ).unwrap_or_else(|_| {
+        // Insert if not exists
+        conn.execute(
+            "INSERT INTO nse_symbols (symbol, name, created_at, updated_at)
+             VALUES (?1, NULL, ?2, ?2)",
+            params![symbol, now],
+        ).unwrap();
+        conn.last_insert_rowid()
+    });
+
+    // Insert or update recently_viewed
+    conn.execute(
+        "INSERT INTO recently_viewed (symbol_id, viewed_at)
+         VALUES (?1, ?2)
+         ON CONFLICT(symbol_id) DO UPDATE SET viewed_at = excluded.viewed_at",
+        params![symbol_id, now],
+    )?;
+
     Ok(())
 }
 
