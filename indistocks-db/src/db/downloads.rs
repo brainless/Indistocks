@@ -6,7 +6,6 @@ use chrono::{Utc, NaiveDate, Datelike};
 use reqwest::blocking::Client;
 use std::time::Duration;
 use std::thread;
-use zip::ZipArchive;
 
 
 
@@ -47,59 +46,7 @@ fn rate_limit_delay() {
     thread::sleep(Duration::from_millis(350)); // ~3 requests per second
 }
 
-fn download_file_with_retry(client: &Client, url: &str, file_path: &PathBuf, max_retries: usize) -> Result<(), Box<dyn std::error::Error>> {
-    for attempt in 0..max_retries {
-        rate_limit_delay();
 
-        let response = client.get(url).send()?;
-
-        if !response.status().is_success() {
-            if attempt == max_retries - 1 {
-                return Err(format!("HTTP {}: {}", response.status(), url).into());
-            }
-            continue;
-        }
-
-        let content_type = response.headers()
-            .get("content-type")
-            .and_then(|ct| ct.to_str().ok())
-            .unwrap_or("");
-
-        if content_type.contains("text/html") {
-            return Err("File unavailable (HTML response)".into());
-        }
-
-        let mut file = fs::File::create(file_path)?;
-        let content = response.bytes()?;
-        std::io::copy(&mut content.as_ref(), &mut file)?;
-
-        return Ok(());
-    }
-    Err("Max retries exceeded".into())
-}
-
-fn extract_zip(file_path: &PathBuf, extract_to: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let file = fs::File::open(file_path)?;
-    let mut archive = ZipArchive::new(file)?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let outpath = extract_to.join(file.name());
-
-        if file.name().ends_with('/') {
-            fs::create_dir_all(&outpath)?;
-        } else {
-            if let Some(p) = outpath.parent() {
-                if !p.exists() {
-                    fs::create_dir_all(p)?;
-                }
-            }
-            let mut outfile = fs::File::create(&outpath)?;
-            std::io::copy(&mut file, &mut outfile)?;
-        }
-    }
-    Ok(())
-}
 
 
 
