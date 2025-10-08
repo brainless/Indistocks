@@ -313,9 +313,28 @@ pub fn download_historical_data(symbol: &str, from_date: NaiveDate, to_date: Nai
     let file_name = format!("historical_{}_{}_{}.csv", symbol, from_str, to_str);
     let file_path = month_dir.join(&file_name);
 
-    let mut file = fs::File::create(&file_path)?;
     let bytes = response.bytes()?;
-    std::io::copy(&mut bytes.as_ref(), &mut file)?;
+    let csv_content = String::from_utf8_lossy(&bytes);
+
+    // Clean headers by trimming spaces
+    let cleaned_content = csv_content.lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                // Clean header row
+                line.split(',')
+                    .map(|field| field.trim().trim_matches('"'))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut file = fs::File::create(&file_path)?;
+    std::io::copy(&mut cleaned_content.as_bytes(), &mut file)?;
 
     downloaded_files.push(file_name);
 

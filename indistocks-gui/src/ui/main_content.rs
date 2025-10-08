@@ -1,5 +1,5 @@
 use crate::app::IndistocksApp;
-use indistocks_db::{get_nse_symbols_paginated, get_symbols_with_downloads};
+
 
 pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
     if let Some(symbol) = &app.selected_symbol {
@@ -33,46 +33,22 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             app.plot_data.clear();
         }
     } else if !app.search_query.is_empty() {
+        // Update search results if query changed
+        app.update_search_results();
+
         // Show search results
         ui.heading("Search Results");
         ui.add_space(10.0);
 
-        let query = app.search_query.to_uppercase();
-        let mut all_symbols = Vec::new();
-
-        // Get saved symbols
-        if let Ok(saved_symbols) = get_nse_symbols_paginated(&app.db_conn, Some(50), None) {
-            println!("Found {} saved symbols", saved_symbols.len());
-            all_symbols.extend(saved_symbols);
-        } else {
-            println!("Failed to get saved symbols");
+        let mut symbol_to_load = None;
+        for symbol in &app.search_results {
+            if ui.button(symbol).clicked() {
+                symbol_to_load = Some(symbol.clone());
+            }
         }
 
-        // Get symbols with downloads
-        if let Ok(download_symbols) = get_symbols_with_downloads(&app.db_conn) {
-            println!("Found {} symbols with downloads: {:?}", download_symbols.len(), download_symbols);
-            for symbol in download_symbols {
-                if !all_symbols.contains(&symbol) {
-                    all_symbols.push(symbol);
-                }
-            }
-        } else {
-            println!("Failed to get symbols with downloads");
-        }
-
-        println!("Total unique symbols for search: {}", all_symbols.len());
-
-        let filtered: Vec<_> = all_symbols.into_iter()
-            .filter(|s| s.contains(&query))
-            .take(20)
-            .collect();
-
-        println!("Search query: {}, found {} matching symbols: {:?}", query, filtered.len(), filtered);
-
-        for symbol in filtered {
-            if ui.button(&symbol).clicked() {
-                app.load_plot_data(&symbol);
-            }
+        if let Some(symbol) = symbol_to_load {
+            app.load_plot_data(&symbol);
         }
     } else {
         ui.vertical_centered(|ui| {
