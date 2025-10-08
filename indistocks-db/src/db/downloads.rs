@@ -106,6 +106,12 @@ pub fn download_historical_data(symbol: &str, from_date: NaiveDate, to_date: Nai
     let bytes = response.bytes()?;
     let csv_content = String::from_utf8_lossy(&bytes);
 
+    // Validate that it's CSV data
+    let lines: Vec<&str> = csv_content.lines().collect();
+    if lines.len() < 2 || !lines[0].contains("Date") {
+        return Err("Response does not appear to be valid CSV data".into());
+    }
+
     // Clean headers by trimming spaces
     let cleaned_content = csv_content.lines()
         .enumerate()
