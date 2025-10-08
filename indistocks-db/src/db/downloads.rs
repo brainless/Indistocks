@@ -69,6 +69,16 @@ pub fn download_historical_data(symbol: &str, from_date: NaiveDate, to_date: Nai
     let response = client
         .get(&url)
         .header("Referer", "https://www.nseindia.com/get-quotes/equity?symbol=HDFCBANK")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+        .header("Accept-Language", "en-US,en;q=0.5")
+        .header("Accept-Encoding", "gzip, deflate, br")
+        .header("DNT", "1")
+        .header("Connection", "keep-alive")
+        .header("Upgrade-Insecure-Requests", "1")
+        .header("Sec-Fetch-Dest", "document")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Cache-Control", "max-age=0")
         .send()?;
 
     if !response.status().is_success() {
