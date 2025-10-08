@@ -92,6 +92,14 @@ pub fn get_nse_symbols_paginated(conn: &Connection, limit: Option<usize>, offset
     Ok(symbols)
 }
 
+pub fn search_nse_symbols(conn: &Connection, query: &str, limit: usize) -> Result<Vec<String>> {
+    let sql = "SELECT symbol FROM nse_symbols WHERE symbol LIKE ? OR name LIKE ? ORDER BY symbol LIMIT ?";
+    let pattern = format!("%{}%", query.to_uppercase());
+    let mut stmt = conn.prepare(sql)?;
+    let symbols = stmt.query_map(params![pattern, pattern, limit], |row| row.get(0))?.collect::<Result<Vec<String>>>()?;
+    Ok(symbols)
+}
+
 pub fn get_downloaded_files_for_symbol(conn: &Connection, symbol: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT file_path FROM nse_downloads

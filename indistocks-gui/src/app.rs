@@ -1,4 +1,4 @@
-use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, get_downloaded_files_for_symbol, validate_download_records, get_symbols_with_downloads, get_nse_symbols_paginated, get_bhavcopy_date_range, get_bhavcopy_files};
+use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, get_downloaded_files_for_symbol, validate_download_records, get_symbols_with_downloads, get_bhavcopy_date_range, get_bhavcopy_files, search_nse_symbols};
 use std::sync::{Arc, Mutex};
 use crate::ui::{top_nav, sidebar, main_content, settings};
 use chrono::NaiveDate;
@@ -83,33 +83,9 @@ impl IndistocksApp {
         }
 
         self.last_search_query = self.search_query.clone();
-        self.search_results.clear();
 
-        if self.search_query.is_empty() {
-            return;
-        }
-
-        let query = self.search_query.to_uppercase();
-        let mut all_symbols = Vec::new();
-
-        // Get saved symbols
-        if let Ok(saved_symbols) = get_nse_symbols_paginated(&*self.db_conn.lock().unwrap(), Some(50), None) {
-            all_symbols.extend(saved_symbols);
-        }
-
-        // Add symbols with downloads (already loaded)
-        for symbol in &self.symbols_with_downloads {
-            if !all_symbols.contains(symbol) {
-                all_symbols.push(symbol.clone());
-            }
-        }
-
-        self.search_results = all_symbols.into_iter()
-            .filter(|s| s.contains(&query))
-            .take(20)
-            .collect();
-
-        println!("Search query: '{}', found {} matching symbols", query, self.search_results.len());
+        self.search_results = search_nse_symbols(&*self.db_conn.lock().unwrap(), &self.search_query, 50).unwrap_or_default();
+        println!("Search query: '{}', found {} matching symbols", self.search_query, self.search_results.len());
     }
 
     pub fn load_plot_data(&mut self, symbol: &str) {
