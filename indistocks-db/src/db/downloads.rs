@@ -2,10 +2,11 @@ use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
 use directories::ProjectDirs;
-use chrono::{Utc, NaiveDate, Datelike};
+use chrono::{Utc, NaiveDate, Datelike, Duration as ChronoDuration};
 use reqwest::blocking::Client;
 use std::time::Duration;
 use std::thread;
+use zip;
 
 
 
@@ -180,4 +181,127 @@ pub fn get_download_records(conn: &Connection) -> Result<Vec<DownloadRecord>, Bo
     })?.collect::<Result<Vec<_>, _>>()?;
 
     Ok(records)
+}
+
+pub fn download_bhavcopy(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    let client = create_http_client();
+    let downloads_dir = get_downloads_dir();
+
+    // Get last downloaded date for bhavcopy (symbol IS NULL)
+    let last_date: Option<i64> = conn.query_row(
+        "SELECT MAX(to_date) FROM nse_downloads WHERE symbol IS NULL AND status = 'completed'",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(None);
+
+    let start_date = if let Some(ts) = last_date {
+        chrono::NaiveDateTime::from_timestamp_opt(ts, 0)
+            .map(|dt| dt.date())
+            .unwrap_or_else(|| chrono::Utc::now().date_naive())
+    } else {
+        chrono::Utc::now().date_naive() - chrono::Duration::days(1) // yesterday
+    };
+
+    let end_date = start_date - chrono::Duration::days(365); // 12 months back
+
+    let mut current_date = start_date;
+
+    while current_date >= end_date {
+        let date_str = current_date.format("%Y%m%d").to_string();
+        let year = current_date.year();
+        let month = current_date.month();
+        let day = current_date.day();
+
+        let url = if current_date < chrono::NaiveDate::from_ymd_opt(2024, 7, 8).unwrap() {
+            // Old format
+            let month_name = match month {
+                1 => "JAN", 2 => "FEB", 3 => "MAR", 4 => "APR", 5 => "MAY", 6 => "JUN",
+                7 => "JUL", 8 => "AUG", 9 => "SEP", 10 => "OCT", 11 => "NOV", 12 => "DEC",
+                _ => "JAN",
+            };
+            format!("https://nsearchives.nseindia.com/content/historical/EQUITIES/{}/{}/cm{:02}{}bhav.csv.zip",
+                    year, month_name, day, month_name)
+        } else {
+            // New format
+            format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str)
+        };
+
+        rate_limit_delay();
+
+        let response = client
+            .get(&url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/118.0")
+            .header("Referer", "https://www.nseindia.com/get-quotes/equity?symbol=HDFCBANK")
+            .send()?;
+
+        if !response.status().is_success() {
+            // Skip if not available (holiday or error)
+            current_date = current_date - chrono::Duration::days(1);
+            continue;
+        }
+
+        // Create directory
+        let year_dir = downloads_dir.join(year.to_string());
+        let month_dir = year_dir.join(format!("{:02}", month));
+        fs::create_dir_all(&month_dir)?;
+
+        let zip_path = month_dir.join(format!("bhavcopy_{}.zip", date_str));
+        let csv_path = month_dir.join(format!("bhavcopy_{}.csv", date_str));
+
+        // Download ZIP
+        let bytes = response.bytes()?;
+        fs::write(&zip_path, &bytes)?;
+
+        // Extract ZIP
+        let mut archive = zip::ZipArchive::new(fs::File::open(&zip_path)?)?;
+        let mut file = archive.by_index(0)?;
+        let mut csv_data = Vec::new();
+        std::io::copy(&mut file, &mut csv_data)?;
+
+        // Validate CSV
+        let csv_str = String::from_utf8_lossy(&csv_data);
+        let lines: Vec<&str> = csv_str.lines().collect();
+        if lines.len() < 2 || !lines[0].contains("TradDt") {
+            fs::remove_file(&zip_path)?;
+            current_date = current_date - chrono::Duration::days(1);
+            continue;
+        }
+
+        // Save CSV
+        fs::write(&csv_path, &csv_data)?;
+        fs::remove_file(&zip_path)?; // Remove ZIP after extraction
+
+        // Record in DB
+        let ts = current_date.and_hms_opt(0,0,0).unwrap().and_utc().timestamp();
+        save_download_record(conn, None, ts, ts, &csv_path.to_string_lossy(), "completed", None)?;
+
+        current_date = current_date - chrono::Duration::days(1);
+    }
+
+    Ok(())
+}
+
+pub fn get_bhavcopy_date_range(conn: &Connection) -> Result<Option<(chrono::NaiveDate, chrono::NaiveDate)>, Box<dyn std::error::Error>> {
+    let mut stmt = conn.prepare(
+        "SELECT MIN(from_date), MAX(to_date) FROM nse_downloads WHERE symbol IS NULL AND status = 'completed'"
+    )?;
+    let mut rows = stmt.query_map([], |row| {
+        let min_ts: Option<i64> = row.get(0)?;
+        let max_ts: Option<i64> = row.get(1)?;
+        Ok((min_ts, max_ts))
+    })?;
+
+    if let Some(row) = rows.next() {
+        let (min_ts, max_ts) = row?;
+        if let (Some(min_ts), Some(max_ts)) = (min_ts, max_ts) {
+            let min_date = chrono::NaiveDateTime::from_timestamp_opt(min_ts, 0)
+                .map(|dt| dt.date());
+            let max_date = chrono::NaiveDateTime::from_timestamp_opt(max_ts, 0)
+                .map(|dt| dt.date());
+            if let (Some(min), Some(max)) = (min_date, max_date) {
+                return Ok(Some((min, max)));
+            }
+        }
+    }
+    Ok(None)
 }

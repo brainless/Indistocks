@@ -17,16 +17,11 @@ pub struct IndistocksApp {
     pub recently_viewed: Vec<RecentlyViewed>,
     pub search_query: String,
     pub settings_error_symbols: Vec<String>,
-    // NSE Downloads fields
-    pub download_symbol: String,
-    pub download_all_symbols: bool,
-    pub download_from_date: String,
-    pub download_to_date: String,
-    pub download_progress: String,
-    pub download_status: String,
-    pub downloaded_files: Vec<String>,
-    pub is_downloading: bool,
-    pub download_receiver: Option<Receiver<crate::ui::settings::DownloadMessage>>,
+    // BhavCopy Download
+    pub bhavcopy_progress: String,
+    pub bhavcopy_status: String,
+    pub is_downloading_bhavcopy: bool,
+    pub bhavcopy_receiver: Option<Receiver<crate::ui::settings::BhavCopyMessage>>,
     // NSE List Download
     pub is_downloading_nse_list: bool,
     pub nse_list_status: String,
@@ -58,18 +53,13 @@ impl IndistocksApp {
         Self {
             current_view: View::Home,
             db_conn,
-            recently_viewed,
+            recently_viewed: get_recently_viewed(&db_conn, 20).unwrap_or_default(),
             search_query: String::new(),
             settings_error_symbols: Vec::new(),
-            download_symbol: String::new(),
-            download_all_symbols: false,
-            download_from_date: String::new(),
-            download_to_date: String::new(),
-            download_progress: String::new(),
-            download_status: String::new(),
-            downloaded_files: Vec::new(),
-            is_downloading: false,
-            download_receiver: None,
+            bhavcopy_progress: String::new(),
+            bhavcopy_status: String::new(),
+            is_downloading_bhavcopy: false,
+            bhavcopy_receiver: None,
             is_downloading_nse_list: false,
             nse_list_status: String::new(),
             nse_list_receiver: None,
@@ -136,27 +126,8 @@ impl IndistocksApp {
 
         match get_downloaded_files_for_symbol(&self.db_conn, symbol) {
             Ok(files) => {
-                if files.is_empty() {
-                    // No data, trigger download of last 12 months
-                    self.downloading_symbol = Some(symbol.to_string());
-                    let (tx, rx) = mpsc::channel();
-                    self.auto_download_receiver = Some(rx);
-                    let symbol_clone = symbol.to_string();
-                    std::thread::spawn(move || {
-                        let now = chrono::Utc::now().date_naive();
-                        let one_year_ago = now - chrono::Duration::days(365);
-                        match download_historical_data(&symbol_clone, one_year_ago, now) {
-                            Ok(downloaded_files) => {
-                                let _ = tx.send(downloaded_files);
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to download historical data for {}: {}", symbol_clone, e);
-                            }
-                        }
-                    });
-                } else {
-                    self.downloading_symbol = None;
-                    println!("Found {} downloaded files for {}", files.len(), symbol);
+                self.downloading_symbol = None;
+                println!("Found {} downloaded files for {}", files.len(), symbol);
                     for file_path in files {
                         println!("Loading file: {}", file_path);
                         // Load CSV and parse
