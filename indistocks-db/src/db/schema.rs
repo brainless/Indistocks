@@ -54,6 +54,23 @@ pub fn init_db() -> Result<Connection> {
 
         CREATE INDEX IF NOT EXISTS idx_recently_viewed_time
         ON recently_viewed(viewed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS nse_downloads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            download_type TEXT NOT NULL,
+            symbol TEXT,
+            from_date INTEGER NOT NULL,
+            to_date INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            file_size INTEGER,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            downloaded_at INTEGER NOT NULL,
+            UNIQUE(download_type, from_date, to_date, symbol)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_nse_downloads_type
+        ON nse_downloads(download_type, downloaded_at DESC);
         "
     )?;
 

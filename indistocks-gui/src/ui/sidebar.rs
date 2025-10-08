@@ -1,6 +1,6 @@
 use crate::app::IndistocksApp;
 
-pub fn render(ui: &mut egui::Ui, app: &IndistocksApp) {
+pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
     ui.vertical(|ui| {
         ui.add_space(10.0);
 
@@ -10,14 +10,15 @@ pub fn render(ui: &mut egui::Ui, app: &IndistocksApp) {
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for item in &app.recently_viewed {
+            let items: Vec<_> = app.recently_viewed.iter().map(|item| (item.symbol.clone(), item.name.clone())).collect();
+            for (symbol, name) in items {
                 ui.add_space(5.0);
 
-                if ui.button(&item.symbol).clicked() {
-                    // Future: navigate to stock detail view
+                if ui.button(&symbol).clicked() {
+                    app.load_plot_data(&symbol);
                 }
 
-                if let Some(name) = &item.name {
+                if let Some(name) = name {
                     ui.label(
                         egui::RichText::new(name)
                             .small()

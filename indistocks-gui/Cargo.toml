@@ -6,4 +6,12 @@ edition = "2021"
 [dependencies]
 eframe = "0.29"
 egui = "0.29"
+egui_plot = "0.29"
 indistocks-db = { path = "../indistocks-db" }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+csv = { workspace = true }
+zip = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
