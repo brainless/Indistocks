@@ -1,0 +1,8 @@
+[workspace]
+members = ["indistocks-gui", "indistocks-db"]
+resolver = "2"
+
+[workspace.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+directories = "5.0"
+chrono = "0.4"

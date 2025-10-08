@@ -1,0 +1,9 @@
+[package]
+name = "indistocks-db"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { workspace = true }
+directories = { workspace = true }
+chrono = { workspace = true }
