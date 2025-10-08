@@ -102,6 +102,16 @@ pub fn get_downloaded_files_for_symbol(conn: &Connection, symbol: &str) -> Resul
     Ok(files)
 }
 
+pub fn get_bhavcopy_files(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path FROM nse_downloads
+         WHERE symbol IS NULL AND status = 'completed'
+         ORDER BY from_date"
+    )?;
+    let files = stmt.query_map([], |row| row.get(0))?.collect::<Result<Vec<String>>>()?;
+    Ok(files)
+}
+
 pub fn get_symbols_with_downloads(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT symbol FROM nse_downloads
