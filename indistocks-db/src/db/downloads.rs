@@ -289,22 +289,42 @@ pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Con
         {
             let conn = db_conn.lock().unwrap();
             let mut rdr = Reader::from_path(&csv_path)?;
+
+            // Get headers to determine column mapping
+            let headers = rdr.headers()?.clone();
+            println!("CSV Headers: {:?}", headers);
+
+            // Find column indices
+            let symbol_idx = headers.iter().position(|h| h == "TckrSymb").unwrap_or(1);
+            let series_idx = headers.iter().position(|h| h == "SctySrs").unwrap_or(2);
+            let open_idx = headers.iter().position(|h| h == "OpnPric").unwrap_or(4);
+            let high_idx = headers.iter().position(|h| h == "HghPric").unwrap_or(5);
+            let low_idx = headers.iter().position(|h| h == "LwPric").unwrap_or(6);
+            let close_idx = headers.iter().position(|h| h == "ClsPric").unwrap_or(7);
+            let last_idx = headers.iter().position(|h| h == "LastPric").unwrap_or(8);
+            let prev_close_idx = headers.iter().position(|h| h == "PrvsClsgPric").unwrap_or(9);
+            let volume_idx = headers.iter().position(|h| h == "TtlTradgVol").unwrap_or(10);
+            let turnover_idx = headers.iter().position(|h| h == "TtlTrfVal").unwrap_or(11);
+            let trades_idx = headers.iter().position(|h| h == "TtlNbOfTxsExctd").unwrap_or(12);
+            let isin_idx = headers.iter().position(|h| h == "ISIN").unwrap_or(13);
+
             let mut rows: Vec<(String, String, i64, f64, f64, f64, f64, f64, f64, i64, f64, i64, String)> = Vec::new();
             for result in rdr.records() {
                 let record = result?;
-                if record.len() < 13 { continue; }
-                let symbol = record[0].trim().to_uppercase();
-                let series = record[1].trim().to_string();
-                let open: f64 = record[2].trim().parse().unwrap_or(0.0);
-                let high: f64 = record[3].trim().parse().unwrap_or(0.0);
-                let low: f64 = record[4].trim().parse().unwrap_or(0.0);
-                let close: f64 = record[5].trim().parse().unwrap_or(0.0);
-                let last: f64 = record[6].trim().parse().unwrap_or(0.0);
-                let prev_close: f64 = record[7].trim().parse().unwrap_or(0.0);
-                let volume: i64 = record[8].trim().parse().unwrap_or(0);
-                let turnover: f64 = record[9].trim().parse().unwrap_or(0.0);
-                let trades: i64 = record[11].trim().parse().unwrap_or(0); // TOTALTRADES is index 11 (0-based)
-                let isin = record[12].trim().to_string();
+                if record.len() <= symbol_idx { continue; }
+                let symbol = record.get(symbol_idx).unwrap_or("").trim().to_uppercase();
+                if symbol.is_empty() { continue; }
+                let series = record.get(series_idx).unwrap_or("").trim().to_string();
+                let open: f64 = record.get(open_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let high: f64 = record.get(high_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let low: f64 = record.get(low_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let close: f64 = record.get(close_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let last: f64 = record.get(last_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let prev_close: f64 = record.get(prev_close_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let volume: i64 = record.get(volume_idx).unwrap_or("0").trim().parse().unwrap_or(0);
+                let turnover: f64 = record.get(turnover_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let trades: i64 = record.get(trades_idx).unwrap_or("0").trim().parse().unwrap_or(0);
+                let isin = record.get(isin_idx).unwrap_or("").trim().to_string();
                 rows.push((symbol, series, ts, open, high, low, close, last, prev_close, volume, turnover, trades, isin));
             }
             for chunk in rows.chunks(100) {
@@ -351,4 +371,10 @@ pub fn get_bhavcopy_date_range(conn: &Connection) -> Result<Option<(chrono::Naiv
         }
     }
     Ok(None)
+}
+
+pub fn clear_bhavcopy_data(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute("DELETE FROM bhavcopy_data", [])?;
+    conn.execute("DELETE FROM nse_downloads WHERE symbol IS NULL", [])?;
+    Ok(())
 }

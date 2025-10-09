@@ -97,7 +97,26 @@ impl IndistocksApp {
         self.plot_data.clear();
 
         let conn = self.db_conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT date, close FROM bhavcopy_data WHERE symbol = ? ORDER BY date").unwrap();
+
+        // Debug: Check total rows in bhavcopy_data
+        let total_rows: i64 = conn.query_row("SELECT COUNT(*) FROM bhavcopy_data", [], |row| row.get(0)).unwrap_or(0);
+        println!("Total rows in bhavcopy_data: {}", total_rows);
+
+        // Debug: Check rows for this symbol (any series)
+        let symbol_rows: i64 = conn.query_row("SELECT COUNT(*) FROM bhavcopy_data WHERE symbol = ?", [symbol], |row| row.get(0)).unwrap_or(0);
+        println!("Rows for symbol '{}': {}", symbol, symbol_rows);
+
+        // Debug: Check what series exist for this symbol
+        let mut series_stmt = conn.prepare("SELECT DISTINCT series FROM bhavcopy_data WHERE symbol = ?").unwrap();
+        let series_list: Vec<String> = series_stmt.query_map([symbol], |row| row.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap_or_default();
+        println!("Series available for '{}': {:?}", symbol, series_list);
+
+        // Debug: Sample some symbols from the database
+        let mut sample_stmt = conn.prepare("SELECT DISTINCT symbol FROM bhavcopy_data LIMIT 5").unwrap();
+        let sample_symbols: Vec<String> = sample_stmt.query_map([], |row| row.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap_or_default();
+        println!("Sample symbols in DB: {:?}", sample_symbols);
+
+        let mut stmt = conn.prepare("SELECT date, close FROM bhavcopy_data WHERE symbol = ? AND series = 'EQ' ORDER BY date").unwrap();
         let rows = stmt.query_map([symbol], |row| {
             let ts: i64 = row.get(0).unwrap();
             let date = chrono::DateTime::from_timestamp(ts, 0).unwrap().naive_utc().date();
