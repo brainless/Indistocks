@@ -331,9 +331,7 @@ pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Con
 }
 
 pub fn get_bhavcopy_date_range(conn: &Connection) -> Result<Option<(chrono::NaiveDate, chrono::NaiveDate)>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare(
-        "SELECT MIN(from_date), MAX(to_date) FROM nse_downloads WHERE symbol IS NULL AND status = 'completed'"
-    )?;
+    let mut stmt = conn.prepare("SELECT MIN(date), MAX(date) FROM bhavcopy_data")?;
     let mut rows = stmt.query_map([], |row| {
         let min_ts: Option<i64> = row.get(0)?;
         let max_ts: Option<i64> = row.get(1)?;
