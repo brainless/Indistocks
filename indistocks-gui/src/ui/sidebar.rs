@@ -1,15 +1,16 @@
 use crate::app::IndistocksApp;
 
 pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
-    ui.vertical(|ui| {
-        ui.add_space(10.0);
+    ui.add_space(10.0);
 
-        ui.heading("Recently Viewed");
+    ui.heading("Recently Viewed");
 
-        ui.add_space(10.0);
-        ui.separator();
+    ui.add_space(10.0);
+    ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
             let items: Vec<_> = app.recently_viewed.iter().map(|item| (item.symbol.clone(), item.name.clone())).collect();
             for (symbol, name) in items {
                 ui.add_space(5.0);
@@ -29,5 +30,4 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
                 ui.add_space(5.0);
             }
         });
-    });
 }

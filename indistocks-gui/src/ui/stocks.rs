@@ -103,17 +103,21 @@ fn render_virtual_table(ui: &mut egui::Ui, app: &mut IndistocksApp) {
         RangeType::Last52Weeks => "52W High",
     };
 
+    let available_height = ui.available_height();
+
     TableBuilder::new(ui)
         .striped(true)
         .resizable(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::auto().at_least(100.0))  // Symbol
-        .column(Column::auto().at_least(200.0))  // Name
-        .column(Column::auto().at_least(80.0))   // LTP
-        .column(Column::auto().at_least(80.0))   // % Change
-        .column(Column::auto().at_least(100.0))  // Volume
-        .column(Column::auto().at_least(80.0))   // Range Low
-        .column(Column::auto().at_least(80.0))   // Range High
+        .min_scrolled_height(0.0)
+        .max_scroll_height(available_height)
+        .column(Column::initial(120.0).at_least(80.0).resizable(true))   // Symbol
+        .column(Column::remainder().at_least(150.0))                      // Name (takes remaining space)
+        .column(Column::initial(100.0).at_least(80.0).resizable(true))   // LTP
+        .column(Column::initial(100.0).at_least(90.0).resizable(true))   // % Change
+        .column(Column::initial(120.0).at_least(100.0).resizable(true))  // Volume
+        .column(Column::initial(100.0).at_least(80.0).resizable(true))   // Range Low
+        .column(Column::initial(100.0).at_least(80.0).resizable(true))   // Range High
         .header(30.0, |mut header| {
             header.col(|ui| {
                 ui.strong("Symbol");
