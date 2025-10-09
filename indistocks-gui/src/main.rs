@@ -15,15 +15,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run in test mode: download 5 days of data and query a stock
+    /// Run in test mode: download data and query a stock
     Test {
         /// Symbol to test (e.g., RELIANCE, TCS, HDFCBANK)
         #[arg(short, long, default_value = "RELIANCE")]
         symbol: String,
+        /// Number of days to download (if not using date range)
+        #[arg(short, long, default_value = "5")]
+        days: usize,
+        /// Start date for download (format: YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+        /// End date for download (format: YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
     },
 }
 
-fn test_mode(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn test_mode(symbol: &str, days: usize, from_date: Option<String>, to_date: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== INDISTOCKS TEST MODE ===");
     println!("Testing with symbol: {}\n", symbol);
 
@@ -37,20 +46,37 @@ fn test_mode(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
     clear_bhavcopy_data(&conn)?;
     println!("   ✓ Data cleared\n");
 
-    // Download 5 days of data using the same function as GUI
-    println!("3. Downloading 5 days of BhavCopy data...");
     use std::sync::{Arc, Mutex, mpsc};
-    use indistocks_db::{BhavCopyMessage, download_bhavcopy_with_limit};
+    use indistocks_db::{BhavCopyMessage, download_bhavcopy_with_limit, download_bhavcopy_with_date_range};
+    use chrono::NaiveDate;
 
     let conn_arc = Arc::new(Mutex::new(conn));
     let (tx, rx) = mpsc::channel();
 
-    // Spawn download in a thread (same as GUI)
-    let conn_clone = conn_arc.clone();
-    std::thread::spawn(move || {
-        let result = download_bhavcopy_with_limit(&conn_clone, &tx, Some(5));
-        let _ = tx.send(BhavCopyMessage::Done(result.map_err(|e| e.to_string())));
-    });
+    // Determine if using date range or day count
+    let use_date_range = from_date.is_some() && to_date.is_some();
+
+    if use_date_range {
+        let from = NaiveDate::parse_from_str(&from_date.unwrap(), "%Y-%m-%d")?;
+        let to = NaiveDate::parse_from_str(&to_date.unwrap(), "%Y-%m-%d")?;
+        println!("3. Downloading BhavCopy data from {} to {}...", to, from);
+
+        // Spawn download in a thread
+        let conn_clone = conn_arc.clone();
+        std::thread::spawn(move || {
+            let result = download_bhavcopy_with_date_range(&conn_clone, &tx, from, to, None);
+            let _ = tx.send(BhavCopyMessage::Done(result.map_err(|e| e.to_string())));
+        });
+    } else {
+        println!("3. Downloading {} days of BhavCopy data...", days);
+
+        // Spawn download in a thread (same as GUI)
+        let conn_clone = conn_arc.clone();
+        std::thread::spawn(move || {
+            let result = download_bhavcopy_with_limit(&conn_clone, &tx, Some(days));
+            let _ = tx.send(BhavCopyMessage::Done(result.map_err(|e| e.to_string())));
+        });
+    }
 
     // Process messages (same as GUI would)
     loop {
@@ -147,8 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Test { symbol }) => {
-            test_mode(&symbol)?;
+        Some(Commands::Test { symbol, days, from, to }) => {
+            test_mode(&symbol, days, from, to)?;
             Ok(())
         }
         None => {

@@ -1,5 +1,5 @@
 use crate::app::{IndistocksApp, View};
-use indistocks_db::{save_nse_symbols_with_names, download_bhavcopy, get_bhavcopy_date_range, clear_bhavcopy_data, BhavCopyMessage};
+use indistocks_db::{save_nse_symbols_with_names, download_bhavcopy, get_bhavcopy_date_range, BhavCopyMessage};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
@@ -147,36 +147,21 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
         ui.heading("NSE Downloads");
         ui.add_space(10.0);
 
-        ui.horizontal(|ui| {
-            // Download BhavCopy button
-            if ui.button("Download BhavCopy").clicked() && !app.is_downloading_bhavcopy {
-                app.is_downloading_bhavcopy = true;
-                app.bhavcopy_progress = "Starting download...".to_string();
-                app.bhavcopy_status = String::new();
+        // Download BhavCopy button
+        if ui.button("Download BhavCopy").clicked() && !app.is_downloading_bhavcopy {
+            app.is_downloading_bhavcopy = true;
+            app.bhavcopy_progress = "Starting download...".to_string();
+            app.bhavcopy_status = String::new();
 
-                let (tx, rx) = mpsc::channel();
-                app.bhavcopy_receiver = Some(rx);
+            let (tx, rx) = mpsc::channel();
+            app.bhavcopy_receiver = Some(rx);
 
-                let db_conn = app.db_conn.clone();
-                thread::spawn(move || {
-                    let result = download_bhavcopy(&db_conn, &tx);
-                    let _ = tx.send(BhavCopyMessage::Done(result.map_err(|e| e.to_string())));
-                });
-            }
-
-            // Clear BhavCopy data button
-            if ui.button("Clear BhavCopy Data").clicked() && !app.is_downloading_bhavcopy {
-                match clear_bhavcopy_data(&*app.db_conn.lock().unwrap()) {
-                    Ok(()) => {
-                        app.bhavcopy_status = "BhavCopy data cleared successfully".to_string();
-                        app.bhavcopy_date_range = None;
-                    }
-                    Err(e) => {
-                        app.bhavcopy_status = format!("Error clearing data: {}", e);
-                    }
-                }
-            }
-        });
+            let db_conn = app.db_conn.clone();
+            thread::spawn(move || {
+                let result = download_bhavcopy(&db_conn, &tx);
+                let _ = tx.send(BhavCopyMessage::Done(result.map_err(|e| e.to_string())));
+            });
+        }
 
         ui.add_space(10.0);
 

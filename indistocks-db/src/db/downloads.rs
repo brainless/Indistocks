@@ -188,6 +188,213 @@ pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Con
     download_bhavcopy_with_limit(db_conn, tx, None)
 }
 
+pub fn download_bhavcopy_with_date_range(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>, tx: &std::sync::mpsc::Sender<crate::BhavCopyMessage>, start_date: NaiveDate, end_date: NaiveDate, max_files: Option<usize>) -> Result<(), Box<dyn std::error::Error>> {
+    let client = create_http_client();
+    let downloads_dir = get_downloads_dir();
+
+    let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+        "Downloading BhavCopy data from {} to {}",
+        end_date.format("%Y-%m-%d"),
+        start_date.format("%Y-%m-%d")
+    )));
+
+    let mut current_date = start_date;
+    let mut downloaded_count = 0;
+    let mut consecutive_error_days = 0;
+    let mut attempts = 0;
+    let max_consecutive_error_days = 10; // Stop if we get 10 consecutive days of errors
+
+    while current_date >= end_date {
+        // Check if we've reached the download limit
+        if let Some(limit) = max_files {
+            if downloaded_count >= limit {
+                println!("Reached download limit of {} files", limit);
+                let _ = tx.send(crate::BhavCopyMessage::Progress(format!("Reached download limit of {} files", limit)));
+                break;
+            }
+        }
+
+        // Stop if too many consecutive days with errors
+        if consecutive_error_days >= max_consecutive_error_days {
+            let msg = format!("Stopping after {} consecutive days with no data available", max_consecutive_error_days);
+            println!("{}", msg);
+            let _ = tx.send(crate::BhavCopyMessage::Progress(msg));
+            break;
+        }
+
+        attempts += 1;
+        let date_str = current_date.format("%Y%m%d").to_string();
+        let year = current_date.year();
+        let month = current_date.month();
+
+        let url = format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str);
+
+        rate_limit_delay();
+
+        println!("Downloading: {}", url);
+        let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+            "Downloading {} (attempt {}, {} downloaded, {} consecutive error days)",
+            current_date.format("%Y-%m-%d"),
+            attempts,
+            downloaded_count,
+            consecutive_error_days
+        )));
+
+        let response = client
+            .get(&url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/118.0")
+            .header("Referer", "https://www.nseindia.com/get-quotes/equity?symbol=HDFCBANK")
+            .send();
+
+        let response = match response {
+            Ok(resp) if resp.status().is_success() => resp,
+            Ok(resp) => {
+                println!("   HTTP error {}: {}", resp.status(), current_date.format("%Y-%m-%d"));
+                let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+                    "   HTTP error {} for {}",
+                    resp.status(),
+                    current_date.format("%Y-%m-%d")
+                )));
+                consecutive_error_days += 1;
+                current_date = current_date - chrono::Duration::days(1);
+                continue;
+            }
+            Err(e) => {
+                println!("   Network error: {} for {}", e, current_date.format("%Y-%m-%d"));
+                let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+                    "   Network error: {} for {}",
+                    e,
+                    current_date.format("%Y-%m-%d")
+                )));
+                consecutive_error_days += 1;
+                current_date = current_date - chrono::Duration::days(1);
+                continue;
+            }
+        };
+
+        // Create directory
+        let year_dir = downloads_dir.join(year.to_string());
+        let month_dir = year_dir.join(format!("{:02}", month));
+        fs::create_dir_all(&month_dir)?;
+
+        let zip_path = month_dir.join(format!("bhavcopy_{}.zip", date_str));
+        let csv_path = month_dir.join(format!("bhavcopy_{}.csv", date_str));
+
+        // Download ZIP
+        let bytes = response.bytes()?;
+        fs::write(&zip_path, &bytes)?;
+
+        // Extract ZIP
+        let mut archive = zip::ZipArchive::new(fs::File::open(&zip_path)?)?;
+        let mut file = archive.by_index(0)?;
+        let mut csv_data = Vec::new();
+        std::io::copy(&mut file, &mut csv_data)?;
+
+        // Validate CSV
+        let csv_str = String::from_utf8_lossy(&csv_data);
+        let lines: Vec<&str> = csv_str.lines().collect();
+        if lines.len() < 2 || !lines[0].contains("TradDt") {
+            println!("   Invalid CSV for {}", current_date.format("%Y-%m-%d"));
+            fs::remove_file(&zip_path)?;
+            consecutive_error_days += 1;
+            current_date = current_date - chrono::Duration::days(1);
+            continue;
+        }
+
+        // Save CSV
+        fs::write(&csv_path, &csv_data)?;
+        fs::remove_file(&zip_path)?; // Remove ZIP after extraction
+
+        // Record in DB
+        let ts = current_date.and_hms_opt(0,0,0).unwrap().and_utc().timestamp();
+        {
+            let conn = db_conn.lock().unwrap();
+            save_download_record(&*conn, None, ts, ts, &csv_path.to_string_lossy(), "completed", None)?;
+        }
+
+        // Parse CSV and insert into bhavcopy_data
+        println!("Processing: {}", csv_path.display());
+        let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+            "Processing {} data into database...",
+            current_date.format("%Y-%m-%d")
+        )));
+        {
+            let conn = db_conn.lock().unwrap();
+            let mut rdr = csv::ReaderBuilder::new()
+                .flexible(true)
+                .from_path(&csv_path)?;
+
+            let headers = rdr.headers()?.clone();
+
+            let symbol_idx = headers.iter().position(|h| h == "TckrSymb").unwrap_or(1);
+            let series_idx = headers.iter().position(|h| h == "SctySrs").unwrap_or(2);
+            let open_idx = headers.iter().position(|h| h == "OpnPric").unwrap_or(4);
+            let high_idx = headers.iter().position(|h| h == "HghPric").unwrap_or(5);
+            let low_idx = headers.iter().position(|h| h == "LwPric").unwrap_or(6);
+            let close_idx = headers.iter().position(|h| h == "ClsPric").unwrap_or(7);
+            let last_idx = headers.iter().position(|h| h == "LastPric").unwrap_or(8);
+            let prev_close_idx = headers.iter().position(|h| h == "PrvsClsgPric").unwrap_or(9);
+            let volume_idx = headers.iter().position(|h| h == "TtlTradgVol").unwrap_or(10);
+            let turnover_idx = headers.iter().position(|h| h == "TtlTrfVal").unwrap_or(11);
+            let trades_idx = headers.iter().position(|h| h == "TtlNbOfTxsExctd").unwrap_or(12);
+            let isin_idx = headers.iter().position(|h| h == "ISIN").unwrap_or(13);
+
+            let mut rows: Vec<(String, String, i64, f64, f64, f64, f64, f64, f64, i64, f64, i64, String)> = Vec::new();
+            for result in rdr.records() {
+                let record = result?;
+                if record.len() <= symbol_idx { continue; }
+                let symbol = record.get(symbol_idx).unwrap_or("").trim().to_uppercase();
+                if symbol.is_empty() { continue; }
+                let series = record.get(series_idx).unwrap_or("").trim().to_string();
+                let open: f64 = record.get(open_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let high: f64 = record.get(high_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let low: f64 = record.get(low_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let close: f64 = record.get(close_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let last: f64 = record.get(last_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let prev_close: f64 = record.get(prev_close_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let volume: i64 = record.get(volume_idx).unwrap_or("0").trim().parse().unwrap_or(0);
+                let turnover: f64 = record.get(turnover_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
+                let trades: i64 = record.get(trades_idx).unwrap_or("0").trim().parse().unwrap_or(0);
+                let isin = record.get(isin_idx).unwrap_or("").trim().to_string();
+                rows.push((symbol, series, ts, open, high, low, close, last, prev_close, volume, turnover, trades, isin));
+            }
+            for chunk in rows.chunks(100) {
+                if chunk.is_empty() { continue; }
+                let placeholders: Vec<String> = chunk.iter().map(|_| "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)".to_string()).collect();
+                let query = format!("INSERT OR IGNORE INTO bhavcopy_data (symbol, series, date, open, high, low, close, last, prev_close, volume, turnover, trades, isin) VALUES {}", placeholders.join(", "));
+                let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().flat_map(|(symbol, series, date, open, high, low, close, last, prev_close, volume, turnover, trades, isin)| vec![symbol as &dyn rusqlite::ToSql, series as &dyn rusqlite::ToSql, date as &dyn rusqlite::ToSql, open as &dyn rusqlite::ToSql, high as &dyn rusqlite::ToSql, low as &dyn rusqlite::ToSql, close as &dyn rusqlite::ToSql, last as &dyn rusqlite::ToSql, prev_close as &dyn rusqlite::ToSql, volume as &dyn rusqlite::ToSql, turnover as &dyn rusqlite::ToSql, trades as &dyn rusqlite::ToSql, isin as &dyn rusqlite::ToSql]).collect();
+                conn.execute(&query, rusqlite::params_from_iter(params))?;
+            }
+        }
+
+        println!("Finished: {}", csv_path.display());
+
+        // Delete CSV file after processing
+        fs::remove_file(&csv_path)?;
+
+        // Success! Reset consecutive error day counter
+        consecutive_error_days = 0;
+        downloaded_count += 1;
+        let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+            "Completed {} ({} files processed)",
+            current_date.format("%Y-%m-%d"),
+            downloaded_count
+        )));
+
+        // Send updated date range
+        {
+            let conn = db_conn.lock().unwrap();
+            if let Ok(Some((min_date, max_date))) = get_bhavcopy_date_range(&*conn) {
+                let _ = tx.send(crate::BhavCopyMessage::DateRangeUpdated(min_date, max_date));
+            }
+        }
+
+        current_date = current_date - chrono::Duration::days(1);
+    }
+
+    Ok(())
+}
+
 pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>, tx: &std::sync::mpsc::Sender<crate::BhavCopyMessage>, max_files: Option<usize>) -> Result<(), Box<dyn std::error::Error>> {
     let client = create_http_client();
     let downloads_dir = get_downloads_dir();
@@ -222,17 +429,28 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
 
     let mut current_date = start_date;
     let mut downloaded_count = 0;
+    let mut consecutive_error_days = 0;
     let mut attempts = 0;
-    let max_attempts = 30; // Maximum days to try when looking for files
+    let max_consecutive_error_days = 10; // Stop if we get 10 consecutive days of errors
 
-    while current_date >= end_date && attempts < max_attempts {
+    while current_date >= end_date {
         // Check if we've reached the download limit
         if let Some(limit) = max_files {
             if downloaded_count >= limit {
                 println!("Reached download limit of {} files", limit);
+                let _ = tx.send(crate::BhavCopyMessage::Progress(format!("Reached download limit of {} files", limit)));
                 break;
             }
         }
+
+        // Stop if too many consecutive days with errors
+        if consecutive_error_days >= max_consecutive_error_days {
+            let msg = format!("Stopping after {} consecutive days with no data available", max_consecutive_error_days);
+            println!("{}", msg);
+            let _ = tx.send(crate::BhavCopyMessage::Progress(msg));
+            break;
+        }
+
         attempts += 1;
         let date_str = current_date.format("%Y%m%d").to_string();
         let year = current_date.year();
@@ -246,9 +464,11 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
 
         println!("Downloading: {}", url);
         let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
-            "Downloading {} (file {} of ~365)",
+            "Downloading {} (attempt {}, {} downloaded, {} consecutive error days)",
             current_date.format("%Y-%m-%d"),
-            downloaded_count + 1
+            attempts,
+            downloaded_count,
+            consecutive_error_days
         )));
 
         let response = client
@@ -261,11 +481,23 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
             Ok(resp) if resp.status().is_success() => resp,
             Ok(resp) => {
                 println!("   HTTP error {}: {}", resp.status(), current_date.format("%Y-%m-%d"));
+                let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+                    "   HTTP error {} for {}",
+                    resp.status(),
+                    current_date.format("%Y-%m-%d")
+                )));
+                consecutive_error_days += 1;
                 current_date = current_date - chrono::Duration::days(1);
                 continue;
             }
             Err(e) => {
                 println!("   Network error: {} for {}", e, current_date.format("%Y-%m-%d"));
+                let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+                    "   Network error: {} for {}",
+                    e,
+                    current_date.format("%Y-%m-%d")
+                )));
+                consecutive_error_days += 1;
                 current_date = current_date - chrono::Duration::days(1);
                 continue;
             }
@@ -293,7 +525,9 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
         let csv_str = String::from_utf8_lossy(&csv_data);
         let lines: Vec<&str> = csv_str.lines().collect();
         if lines.len() < 2 || !lines[0].contains("TradDt") {
+            println!("   Invalid CSV for {}", current_date.format("%Y-%m-%d"));
             fs::remove_file(&zip_path)?;
+            consecutive_error_days += 1;
             current_date = current_date - chrono::Duration::days(1);
             continue;
         }
@@ -325,7 +559,6 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
 
             // Get headers to determine column mapping
             let headers = rdr.headers()?.clone();
-            println!("CSV Headers: {:?}", headers);
 
             // Find column indices
             let symbol_idx = headers.iter().position(|h| h == "TckrSymb").unwrap_or(1);
@@ -374,7 +607,8 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
         // Delete CSV file after processing
         fs::remove_file(&csv_path)?;
 
-        // Send progress
+        // Success! Reset consecutive error day counter
+        consecutive_error_days = 0;
         downloaded_count += 1;
         let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
             "Completed {} ({} files processed)",
