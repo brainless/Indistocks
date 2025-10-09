@@ -108,9 +108,57 @@ jobs:
           name: indistocks-windows-x86_64
           path: indistocks-windows-x86_64.zip
 
+  build-macos:
+    name: Build macOS Binary
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --package indistocks
+
+      - name: Strip binary
+        run: strip target/release/indistocks
+
+      - name: Package binary
+        run: |
+          mkdir -p indistocks-macos
+          cp target/release/indistocks indistocks-macos/
+          cp README.md indistocks-macos/ 2>/dev/null || echo "No README found"
+          tar czf indistocks-macos-x86_64.tar.gz indistocks-macos/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: indistocks-macos-x86_64
+          path: indistocks-macos-x86_64.tar.gz
+
   create-release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -156,6 +204,15 @@ jobs:
           \`\`\`bash
           tar xzf indistocks-linux-x86_64.tar.gz
           cd indistocks-linux
+          ./indistocks
+          \`\`\`
+
+          ### macOS
+
+          Extract the tarball and run the \`indistocks\` binary:
+          \`\`\`bash
+          tar xzf indistocks-macos-x86_64.tar.gz
+          cd indistocks-macos
           ./indistocks
           \`\`\`
 
