@@ -293,7 +293,7 @@ pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Con
             for result in rdr.records() {
                 let record = result?;
                 if record.len() < 13 { continue; }
-                let symbol = record[0].trim().to_string();
+                let symbol = record[0].trim().to_uppercase();
                 let series = record[1].trim().to_string();
                 let open: f64 = record[2].trim().parse().unwrap_or(0.0);
                 let high: f64 = record[3].trim().parse().unwrap_or(0.0);

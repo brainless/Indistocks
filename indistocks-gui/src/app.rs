@@ -109,6 +109,7 @@ impl IndistocksApp {
                 self.plot_data.push((date, close));
             }
         }
+        println!("Loaded {} data points for {}", self.plot_data.len(), symbol);
         println!("Total data points loaded: {}", self.plot_data.len());
     }
 }
