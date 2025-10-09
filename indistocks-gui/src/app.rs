@@ -1,4 +1,4 @@
-use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, validate_download_records, get_bhavcopy_date_range, search_nse_symbols};
+use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, validate_download_records, get_bhavcopy_date_range, search_nse_symbols, StockData};
 use std::sync::{Arc, Mutex};
 use crate::ui::{top_nav, sidebar, main_content, settings};
 use chrono::NaiveDate;
@@ -8,6 +8,7 @@ use indistocks_db::BhavCopyMessage;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum View {
     Home,
+    Stocks,
     Settings,
     Logs,
 }
@@ -34,6 +35,21 @@ pub struct IndistocksApp {
     // Search caching
     pub last_search_query: String,
     pub search_results: Vec<String>,
+    // Stocks page
+    pub stocks_price_from: String,
+    pub stocks_price_to: String,
+    pub stocks_range_type: RangeType,
+    pub stocks_cached_data: Vec<StockData>,
+    pub stocks_last_price_from: String,
+    pub stocks_last_price_to: String,
+    pub stocks_last_range_type: RangeType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RangeType {
+    Last5Days,
+    Last30Days,
+    Last52Weeks,
 }
 
 impl IndistocksApp {
@@ -66,6 +82,13 @@ impl IndistocksApp {
             plot_data: Vec::new(),
             last_search_query: String::new(),
             search_results: Vec::new(),
+            stocks_price_from: String::new(),
+            stocks_price_to: String::new(),
+            stocks_range_type: RangeType::Last30Days,
+            stocks_cached_data: Vec::new(),
+            stocks_last_price_from: String::new(),
+            stocks_last_price_to: String::new(),
+            stocks_last_range_type: RangeType::Last30Days,
         }
     }
 
@@ -161,6 +184,7 @@ impl eframe::App for IndistocksApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_view {
                 View::Home => main_content::render(ui, self),
+                View::Stocks => crate::ui::stocks::render(ui, self),
                 View::Settings => settings::render(ui, self),
                 View::Logs => {
                     ui.heading("Logs");

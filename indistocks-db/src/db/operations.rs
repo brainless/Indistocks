@@ -364,4 +364,99 @@ pub fn get_date_directory_path(date: chrono::NaiveDate) -> PathBuf {
     month_dir
 }
 
+#[derive(Debug, Clone)]
+pub struct StockData {
+    pub symbol: String,
+    pub name: Option<String>,
+    pub ltp: f64,
+    pub change_percent: f64,
+    pub volume: i64,
+    pub range_low: f64,
+    pub range_high: f64,
+}
+
+pub fn get_all_stocks_with_metrics(conn: &Connection, price_from: Option<f64>, price_to: Option<f64>, range_days: i64) -> Result<Vec<StockData>> {
+    // Get the latest date we have data for
+    let latest_date: Option<i64> = conn.query_row(
+        "SELECT MAX(date) FROM bhavcopy_data WHERE series = 'EQ'",
+        [],
+        |row| row.get(0)
+    ).ok();
+
+    let latest_date = match latest_date {
+        Some(d) => d,
+        None => return Ok(Vec::new()),
+    };
+
+    // Calculate range start based on days
+    let range_start = latest_date - (range_days * 24 * 60 * 60);
+
+    // Build query with optional price filters
+    let mut query = String::from(
+        "SELECT
+            ns.symbol,
+            ns.name,
+            latest.close as ltp,
+            latest.prev_close,
+            CASE
+                WHEN latest.prev_close > 0 THEN ((latest.close - latest.prev_close) / latest.prev_close * 100.0)
+                ELSE 0
+            END as change_percent,
+            latest.volume,
+            range_stats.range_low,
+            range_stats.range_high
+        FROM nse_symbols ns
+        INNER JOIN (
+            SELECT symbol, close, prev_close, volume
+            FROM bhavcopy_data
+            WHERE date = ? AND series = 'EQ'
+        ) latest ON ns.symbol = latest.symbol
+        INNER JOIN (
+            SELECT
+                symbol,
+                MIN(low) as range_low,
+                MAX(high) as range_high
+            FROM bhavcopy_data
+            WHERE date >= ? AND date <= ? AND series = 'EQ'
+            GROUP BY symbol
+        ) range_stats ON ns.symbol = range_stats.symbol
+        WHERE 1=1"
+    );
+
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(latest_date),
+        Box::new(range_start),
+        Box::new(latest_date),
+    ];
+
+    if let Some(from) = price_from {
+        query.push_str(" AND latest.close >= ?");
+        params.push(Box::new(from));
+    }
+
+    if let Some(to) = price_to {
+        query.push_str(" AND latest.close <= ?");
+        params.push(Box::new(to));
+    }
+
+    query.push_str(" ORDER BY ns.symbol");
+
+    let mut stmt = conn.prepare(&query)?;
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let stocks = stmt.query_map(params_refs.as_slice(), |row| {
+        Ok(StockData {
+            symbol: row.get(0)?,
+            name: row.get(1)?,
+            ltp: row.get(2)?,
+            change_percent: row.get(4)?,
+            volume: row.get(5)?,
+            range_low: row.get(6)?,
+            range_high: row.get(7)?,
+        })
+    })?;
+
+    stocks.collect()
+}
+
 

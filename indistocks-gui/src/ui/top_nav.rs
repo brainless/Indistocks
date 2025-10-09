@@ -36,6 +36,13 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             if ui.button("🔔").on_hover_text("Notifications").clicked() {
                 // Future: show notifications
             }
+
+            ui.add_space(10.0);
+
+            // Stocks button
+            if ui.button("Stocks").clicked() {
+                app.current_view = View::Stocks;
+            }
         });
     });
 
