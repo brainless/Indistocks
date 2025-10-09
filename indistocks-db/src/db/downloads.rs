@@ -7,7 +7,7 @@ use reqwest::blocking::Client;
 use std::time::Duration;
 use std::thread;
 use zip;
-use csv::Reader;
+use csv;
 
 
 
@@ -237,21 +237,10 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
         let date_str = current_date.format("%Y%m%d").to_string();
         let year = current_date.year();
         let month = current_date.month();
-        let day = current_date.day();
 
-        let url = if current_date < chrono::NaiveDate::from_ymd_opt(2024, 7, 8).unwrap() {
-            // Old format
-            let month_name = match month {
-                1 => "JAN", 2 => "FEB", 3 => "MAR", 4 => "APR", 5 => "MAY", 6 => "JUN",
-                7 => "JUL", 8 => "AUG", 9 => "SEP", 10 => "OCT", 11 => "NOV", 12 => "DEC",
-                _ => "JAN",
-            };
-            format!("https://nsearchives.nseindia.com/content/historical/EQUITIES/{}/{}/cm{:02}{}bhav.csv.zip",
-                    year, month_name, day, month_name)
-        } else {
-            // New format
-            format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str)
-        };
+        // NSE switched to new format for 2024 onwards
+        // Old format URLs no longer work, even for dates before the switch
+        let url = format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str);
 
         rate_limit_delay();
 
@@ -328,7 +317,11 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
         )));
         {
             let conn = db_conn.lock().unwrap();
-            let mut rdr = Reader::from_path(&csv_path)?;
+            // Configure CSV reader to be flexible about field counts
+            // Some NSE files (e.g., 2024-06-19, 2024-06-20) have trailing commas in headers
+            let mut rdr = csv::ReaderBuilder::new()
+                .flexible(true)
+                .from_path(&csv_path)?;
 
             // Get headers to determine column mapping
             let headers = rdr.headers()?.clone();
