@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install dependencies
         run: |
@@ -75,6 +77,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -121,6 +125,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -173,6 +179,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Download artifacts
@@ -183,15 +190,22 @@ jobs:
       - name: Generate release notes
         id: release_notes
         run: |
+          # Determine the tag name
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG_NAME="${{ github.event.inputs.tag }}"
+          else
+            TAG_NAME="${{ github.ref_name }}"
+          fi
+
           # Get the previous tag
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${{ github.ref_name }}$" | head -n 1)
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG_NAME}$" | head -n 1)
 
           if [ -z "$PREV_TAG" ]; then
             echo "First release - including all commits"
-            COMMITS=$(git log --pretty=format:"- %s (%h)" ${{ github.ref_name }})
+            COMMITS=$(git log --pretty=format:"- %s (%h)" ${TAG_NAME})
           else
-            echo "Generating changelog from $PREV_TAG to ${{ github.ref_name }}"
-            COMMITS=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..${{ github.ref_name }})
+            echo "Generating changelog from $PREV_TAG to ${TAG_NAME}"
+            COMMITS=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..${TAG_NAME})
           fi
 
           # Write to file to preserve newlines
@@ -232,6 +246,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
