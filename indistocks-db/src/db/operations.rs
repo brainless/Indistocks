@@ -363,3 +363,5 @@ pub fn get_date_directory_path(date: chrono::NaiveDate) -> PathBuf {
     fs::create_dir_all(&month_dir).expect("Unable to create date directory");
     month_dir
 }
+
+

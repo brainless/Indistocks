@@ -73,6 +73,27 @@ pub fn init_db() -> Result<Connection> {
 
         CREATE INDEX IF NOT EXISTS idx_nse_downloads_downloaded_at
         ON nse_downloads(downloaded_at DESC);
+
+        CREATE TABLE IF NOT EXISTS bhavcopy_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            series TEXT,
+            date INTEGER NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            last REAL,
+            prev_close REAL,
+            volume INTEGER,
+            turnover REAL,
+            trades INTEGER,
+            isin TEXT,
+            UNIQUE(symbol, date)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_bhavcopy_data_symbol_date
+        ON bhavcopy_data(symbol, date);
         "
     )?;
 

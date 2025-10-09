@@ -2,11 +2,12 @@ use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
 use directories::ProjectDirs;
-use chrono::{Utc, NaiveDate, Datelike, Duration as ChronoDuration};
+use chrono::{Utc, NaiveDate, Datelike};
 use reqwest::blocking::Client;
 use std::time::Duration;
 use std::thread;
 use zip;
+use csv::Reader;
 
 
 
@@ -183,20 +184,23 @@ pub fn get_download_records(conn: &Connection) -> Result<Vec<DownloadRecord>, Bo
     Ok(records)
 }
 
-pub fn download_bhavcopy(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>, tx: &std::sync::mpsc::Sender<crate::BhavCopyMessage>) -> Result<(), Box<dyn std::error::Error>> {
     let client = create_http_client();
     let downloads_dir = get_downloads_dir();
 
     // Get last downloaded date for bhavcopy (symbol IS NULL)
-    let last_date: Option<i64> = conn.query_row(
-        "SELECT MAX(to_date) FROM nse_downloads WHERE symbol IS NULL AND status = 'completed'",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(None);
+    let last_date: Option<i64> = {
+        let conn = db_conn.lock().unwrap();
+        conn.query_row(
+            "SELECT MAX(to_date) FROM nse_downloads WHERE symbol IS NULL AND status = 'completed'",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(None)
+    };
 
     let start_date = if let Some(ts) = last_date {
-        chrono::NaiveDateTime::from_timestamp_opt(ts, 0)
-            .map(|dt| dt.date())
+        chrono::DateTime::from_timestamp(ts, 0)
+            .map(|dt| dt.naive_utc().date())
             .unwrap_or_else(|| chrono::Utc::now().date_naive())
     } else {
         chrono::Utc::now().date_naive() - chrono::Duration::days(1) // yesterday
@@ -227,6 +231,8 @@ pub fn download_bhavcopy(conn: &Connection) -> Result<(), Box<dyn std::error::Er
         };
 
         rate_limit_delay();
+
+        println!("Downloading: {}", url);
 
         let response = client
             .get(&url)
@@ -273,7 +279,50 @@ pub fn download_bhavcopy(conn: &Connection) -> Result<(), Box<dyn std::error::Er
 
         // Record in DB
         let ts = current_date.and_hms_opt(0,0,0).unwrap().and_utc().timestamp();
-        save_download_record(conn, None, ts, ts, &csv_path.to_string_lossy(), "completed", None)?;
+        {
+            let conn = db_conn.lock().unwrap();
+            save_download_record(&*conn, None, ts, ts, &csv_path.to_string_lossy(), "completed", None)?;
+        }
+
+        // Parse CSV and insert into bhavcopy_data
+        println!("Processing: {}", csv_path.display());
+        {
+            let conn = db_conn.lock().unwrap();
+            let mut rdr = Reader::from_path(&csv_path)?;
+            let mut rows: Vec<(String, String, i64, f64, f64, f64, f64, f64, f64, i64, f64, i64, String)> = Vec::new();
+            for result in rdr.records() {
+                let record = result?;
+                if record.len() < 13 { continue; }
+                let symbol = record[0].trim().to_string();
+                let series = record[1].trim().to_string();
+                let open: f64 = record[2].trim().parse().unwrap_or(0.0);
+                let high: f64 = record[3].trim().parse().unwrap_or(0.0);
+                let low: f64 = record[4].trim().parse().unwrap_or(0.0);
+                let close: f64 = record[5].trim().parse().unwrap_or(0.0);
+                let last: f64 = record[6].trim().parse().unwrap_or(0.0);
+                let prev_close: f64 = record[7].trim().parse().unwrap_or(0.0);
+                let volume: i64 = record[8].trim().parse().unwrap_or(0);
+                let turnover: f64 = record[9].trim().parse().unwrap_or(0.0);
+                let trades: i64 = record[11].trim().parse().unwrap_or(0); // TOTALTRADES is index 11 (0-based)
+                let isin = record[12].trim().to_string();
+                rows.push((symbol, series, ts, open, high, low, close, last, prev_close, volume, turnover, trades, isin));
+            }
+            for chunk in rows.chunks(100) {
+                if chunk.is_empty() { continue; }
+                let placeholders: Vec<String> = chunk.iter().map(|_| "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)".to_string()).collect();
+                let query = format!("INSERT OR IGNORE INTO bhavcopy_data (symbol, series, date, open, high, low, close, last, prev_close, volume, turnover, trades, isin) VALUES {}", placeholders.join(", "));
+                let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().flat_map(|(symbol, series, date, open, high, low, close, last, prev_close, volume, turnover, trades, isin)| vec![symbol as &dyn rusqlite::ToSql, series as &dyn rusqlite::ToSql, date as &dyn rusqlite::ToSql, open as &dyn rusqlite::ToSql, high as &dyn rusqlite::ToSql, low as &dyn rusqlite::ToSql, close as &dyn rusqlite::ToSql, last as &dyn rusqlite::ToSql, prev_close as &dyn rusqlite::ToSql, volume as &dyn rusqlite::ToSql, turnover as &dyn rusqlite::ToSql, trades as &dyn rusqlite::ToSql, isin as &dyn rusqlite::ToSql]).collect();
+                conn.execute(&query, rusqlite::params_from_iter(params))?;
+            }
+        }
+
+        println!("Finished: {}", csv_path.display());
+
+        // Delete CSV file after processing
+        fs::remove_file(&csv_path)?;
+
+        // Send progress
+        let _ = tx.send(crate::BhavCopyMessage::Progress(format!("Downloaded {}", date_str)));
 
         current_date = current_date - chrono::Duration::days(1);
     }
@@ -294,10 +343,10 @@ pub fn get_bhavcopy_date_range(conn: &Connection) -> Result<Option<(chrono::Naiv
     if let Some(row) = rows.next() {
         let (min_ts, max_ts) = row?;
         if let (Some(min_ts), Some(max_ts)) = (min_ts, max_ts) {
-            let min_date = chrono::NaiveDateTime::from_timestamp_opt(min_ts, 0)
-                .map(|dt| dt.date());
-            let max_date = chrono::NaiveDateTime::from_timestamp_opt(max_ts, 0)
-                .map(|dt| dt.date());
+            let min_date = chrono::DateTime::from_timestamp(min_ts, 0)
+                .map(|dt| dt.naive_utc().date());
+            let max_date = chrono::DateTime::from_timestamp(max_ts, 0)
+                .map(|dt| dt.naive_utc().date());
             if let (Some(min), Some(max)) = (min_date, max_date) {
                 return Ok(Some((min, max)));
             }

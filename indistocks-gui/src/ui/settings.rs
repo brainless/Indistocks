@@ -1,20 +1,9 @@
 use crate::app::{IndistocksApp, View};
-use indistocks_db::{save_nse_symbols_with_names, download_historical_data, get_nse_symbols, download_bhavcopy, get_bhavcopy_date_range};
-use chrono::NaiveDate;
+use indistocks_db::{save_nse_symbols_with_names, download_bhavcopy, get_bhavcopy_date_range, BhavCopyMessage};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
-#[derive(Debug)]
-pub enum DownloadMessage {
-    Progress(String),
-    Done(Result<Vec<String>, String>),
-}
 
-#[derive(Debug)]
-pub enum BhavCopyMessage {
-    Progress(String),
-    Done(Result<(), String>),
-}
 
 #[derive(Debug)]
 pub enum NseListMessage {
@@ -115,18 +104,19 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
                             app.nse_list_receiver = None;
                             match result {
                                 Ok(symbols) => {
-                                    match save_nse_symbols_with_names(&app.db_conn, symbols) {
-                                        Ok((count, errors)) => {
-                                            app.nse_list_status = format!("Downloaded and saved {} symbols successfully", count);
-                                            if !errors.is_empty() {
-                                                app.nse_list_status.push_str(&format!(" ({} errors)", errors.len()));
-                                            }
-                                            app.refresh_recently_viewed();
-                                        }
-                                        Err(e) => {
-                                            app.nse_list_status = format!("Error saving symbols: {}", e);
-                                        }
-                                    }
+                             let result = save_nse_symbols_with_names(&*app.db_conn.lock().unwrap(), symbols);
+                             match result {
+                                 Ok((count, errors)) => {
+                                     app.nse_list_status = format!("Downloaded and saved {} symbols successfully", count);
+                                     if !errors.is_empty() {
+                                         app.nse_list_status.push_str(&format!(" ({} errors)", errors.len()));
+                                     }
+                                     app.refresh_recently_viewed();
+                                 }
+                                 Err(e) => {
+                                     app.nse_list_status = format!("Error saving symbols: {}", e);
+                                 }
+                             }
                                 }
                                 Err(e) => {
                                     app.nse_list_status = format!("Error downloading: {}", e);
@@ -163,7 +153,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
 
             let db_conn = app.db_conn.clone();
             thread::spawn(move || {
-                let result = download_bhavcopy(&db_conn);
+                let result = download_bhavcopy(&db_conn, &tx);
                 let _ = tx.send(BhavCopyMessage::Done(result.map_err(|e| e.to_string())));
             });
         }
@@ -172,8 +162,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
 
         // Show date range of existing BhavCopy downloads
         ui.label("Existing BhavCopy Downloads:");
-        match get_bhavcopy_date_range(&app.db_conn) {
-            Ok(Some((start, end))) => {
+        match app.bhavcopy_date_range {
+            Some((start, end)) => {
                 ui.label(format!("From {} to {}", start.format("%Y-%m-%d"), end.format("%Y-%m-%d")));
             }
             _ => {
@@ -195,6 +185,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
                             match result {
                                 Ok(()) => {
                                     app.bhavcopy_status = "BhavCopy download completed successfully".to_string();
+                                    // Update date range
+                                    app.bhavcopy_date_range = get_bhavcopy_date_range(&*app.db_conn.lock().unwrap()).unwrap_or(None);
                                 }
                                 Err(e) => {
                                     app.bhavcopy_status = format!("Error: {}", e);

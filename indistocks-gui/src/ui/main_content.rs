@@ -7,11 +7,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
         ui.add_space(10.0);
 
         if app.plot_data.is_empty() {
-            if app.downloading_symbol.as_deref() == Some(symbol.as_str()) {
-                ui.label("Downloading recent data, please check this page shortly.");
-            } else {
-                ui.label("No downloaded data available for this symbol.");
-            }
+            ui.label("No downloaded data available for this symbol.");
         } else {
             // Plot the data
             let plot = egui_plot::Plot::new("price_plot")
