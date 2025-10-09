@@ -95,6 +95,7 @@ jobs:
         run: cargo build --release --package indistocks
 
       - name: Package binary
+        shell: cmd
         run: |
           mkdir indistocks-windows
           copy target\release\indistocks.exe indistocks-windows\
