@@ -2,6 +2,8 @@
 
 A cross-platform desktop GUI application for viewing and analyzing historical data for Indian stocks from NSE (National Stock Exchange).
 
+![Downloaded Stocks data shown in grid](/assets/screenshots/pre_mvp/pre_MVP_Stocks_Grid.png "Downloaded Stocks data shown in grid")
+
 ## Features
 
 ### Core Features
@@ -23,6 +25,8 @@ A cross-platform desktop GUI application for viewing and analyzing historical da
 - **Smart Search**: Fast symbol search with caching for quick access to any stock
 - **Recently Viewed**: Quick access sidebar for your most recent stock views
 - **SQLite Database**: Efficient local storage with proper indexing and foreign key constraints
+
+![Graph of a single Stock from NSE India data](/assets/screenshots/pre_mvp/pre_MVP_Stock_Graph.png "Graph of a single Stock from NSE India data")
 
 ### Technical Features
 - Modern Rust architecture with workspace structure
@@ -77,12 +81,16 @@ cargo run --release
 
 ## Usage
 
+![Home screen right after downloading](/assets/screenshots/pre_mvp/pre_MVP_Home.png "Home screen right after downloading")
+
 ### First Time Setup
 1. **Download NSE Stock List**: Go to Settings (⚙ icon) and click "Download NSE List" to get the current list of NSE stocks
 2. **Download Historical Data**: Click "Download BhavCopy Data" to fetch historical stock prices
    - Data downloads from yesterday backwards for ~365 days
    - Progress is shown in real-time
    - Downloaded data is automatically processed and indexed
+
+![Settings page and download options](/assets/screenshots/pre_mvp/pre_MVP_Settings.png "Settings page and download options")
 
 ### Working with Stocks
 1. **Search for Stocks**: Use the search bar at the top to find any NSE stock by symbol
