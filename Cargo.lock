@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "indistocks"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "indistocks-db"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "csv",
