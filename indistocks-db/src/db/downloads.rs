@@ -48,6 +48,23 @@ fn rate_limit_delay() {
     thread::sleep(Duration::from_millis(350)); // ~3 requests per second
 }
 
+fn get_bhavcopy_url(date: NaiveDate) -> String {
+    let year = date.year();
+
+    if year >= 2024 {
+        // New format (2024 onwards)
+        let date_str = date.format("%Y%m%d");
+        format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str)
+    } else {
+        // Old format (2023 and before)
+        let day = date.format("%d");
+        let month = date.format("%b").to_string().to_uppercase();
+        let year_str = date.format("%Y");
+        format!("https://nsearchives.nseindia.com/content/historical/EQUITIES/{}/{}/cm{}{}{}bhav.csv.zip",
+                year_str, month, day, month, year_str)
+    }
+}
+
 
 
 
@@ -223,11 +240,10 @@ pub fn download_bhavcopy_with_date_range(db_conn: &std::sync::Arc<std::sync::Mut
         }
 
         attempts += 1;
-        let date_str = current_date.format("%Y%m%d").to_string();
         let year = current_date.year();
         let month = current_date.month();
 
-        let url = format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str);
+        let url = get_bhavcopy_url(current_date);
 
         rate_limit_delay();
 
@@ -277,6 +293,7 @@ pub fn download_bhavcopy_with_date_range(db_conn: &std::sync::Arc<std::sync::Mut
         let month_dir = year_dir.join(format!("{:02}", month));
         fs::create_dir_all(&month_dir)?;
 
+        let date_str = current_date.format("%Y%m%d").to_string();
         let zip_path = month_dir.join(format!("bhavcopy_{}.zip", date_str));
         let csv_path = month_dir.join(format!("bhavcopy_{}.csv", date_str));
 
@@ -293,7 +310,8 @@ pub fn download_bhavcopy_with_date_range(db_conn: &std::sync::Arc<std::sync::Mut
         // Validate CSV
         let csv_str = String::from_utf8_lossy(&csv_data);
         let lines: Vec<&str> = csv_str.lines().collect();
-        if lines.len() < 2 || !lines[0].contains("TradDt") {
+        // Check for either new format (TradDt) or old format (SYMBOL)
+        if lines.len() < 2 || (!lines[0].contains("TradDt") && !lines[0].contains("SYMBOL")) {
             println!("   Invalid CSV for {}", current_date.format("%Y-%m-%d"));
             fs::remove_file(&zip_path)?;
             consecutive_error_days += 1;
@@ -326,18 +344,19 @@ pub fn download_bhavcopy_with_date_range(db_conn: &std::sync::Arc<std::sync::Mut
 
             let headers = rdr.headers()?.clone();
 
-            let symbol_idx = headers.iter().position(|h| h == "TckrSymb").unwrap_or(1);
-            let series_idx = headers.iter().position(|h| h == "SctySrs").unwrap_or(2);
-            let open_idx = headers.iter().position(|h| h == "OpnPric").unwrap_or(4);
-            let high_idx = headers.iter().position(|h| h == "HghPric").unwrap_or(5);
-            let low_idx = headers.iter().position(|h| h == "LwPric").unwrap_or(6);
-            let close_idx = headers.iter().position(|h| h == "ClsPric").unwrap_or(7);
-            let last_idx = headers.iter().position(|h| h == "LastPric").unwrap_or(8);
-            let prev_close_idx = headers.iter().position(|h| h == "PrvsClsgPric").unwrap_or(9);
-            let volume_idx = headers.iter().position(|h| h == "TtlTradgVol").unwrap_or(10);
-            let turnover_idx = headers.iter().position(|h| h == "TtlTrfVal").unwrap_or(11);
-            let trades_idx = headers.iter().position(|h| h == "TtlNbOfTxsExctd").unwrap_or(12);
-            let isin_idx = headers.iter().position(|h| h == "ISIN").unwrap_or(13);
+            // Support both old format (2023 and before) and new format (2024 onwards)
+            let symbol_idx = headers.iter().position(|h| h == "TckrSymb" || h == "SYMBOL").unwrap_or(0);
+            let series_idx = headers.iter().position(|h| h == "SctySrs" || h == "SERIES").unwrap_or(1);
+            let open_idx = headers.iter().position(|h| h == "OpnPric" || h == "OPEN").unwrap_or(2);
+            let high_idx = headers.iter().position(|h| h == "HghPric" || h == "HIGH").unwrap_or(3);
+            let low_idx = headers.iter().position(|h| h == "LwPric" || h == "LOW").unwrap_or(4);
+            let close_idx = headers.iter().position(|h| h == "ClsPric" || h == "CLOSE").unwrap_or(5);
+            let last_idx = headers.iter().position(|h| h == "LastPric" || h == "LAST").unwrap_or(6);
+            let prev_close_idx = headers.iter().position(|h| h == "PrvsClsgPric" || h == "PREVCLOSE").unwrap_or(7);
+            let volume_idx = headers.iter().position(|h| h == "TtlTradgVol" || h == "TOTTRDQTY").unwrap_or(8);
+            let turnover_idx = headers.iter().position(|h| h == "TtlTrfVal" || h == "TOTTRDVAL").unwrap_or(9);
+            let trades_idx = headers.iter().position(|h| h == "TtlNbOfTxsExctd" || h == "TOTALTRADES").unwrap_or(10);
+            let isin_idx = headers.iter().position(|h| h == "ISIN").unwrap_or(11);
 
             let mut rows: Vec<(String, String, i64, f64, f64, f64, f64, f64, f64, i64, f64, i64, String)> = Vec::new();
             for result in rdr.records() {
@@ -452,13 +471,10 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
         }
 
         attempts += 1;
-        let date_str = current_date.format("%Y%m%d").to_string();
         let year = current_date.year();
         let month = current_date.month();
 
-        // NSE switched to new format for 2024 onwards
-        // Old format URLs no longer work, even for dates before the switch
-        let url = format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str);
+        let url = get_bhavcopy_url(current_date);
 
         rate_limit_delay();
 
@@ -508,6 +524,7 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
         let month_dir = year_dir.join(format!("{:02}", month));
         fs::create_dir_all(&month_dir)?;
 
+        let date_str = current_date.format("%Y%m%d").to_string();
         let zip_path = month_dir.join(format!("bhavcopy_{}.zip", date_str));
         let csv_path = month_dir.join(format!("bhavcopy_{}.csv", date_str));
 
@@ -524,7 +541,8 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
         // Validate CSV
         let csv_str = String::from_utf8_lossy(&csv_data);
         let lines: Vec<&str> = csv_str.lines().collect();
-        if lines.len() < 2 || !lines[0].contains("TradDt") {
+        // Check for either new format (TradDt) or old format (SYMBOL)
+        if lines.len() < 2 || (!lines[0].contains("TradDt") && !lines[0].contains("SYMBOL")) {
             println!("   Invalid CSV for {}", current_date.format("%Y-%m-%d"));
             fs::remove_file(&zip_path)?;
             consecutive_error_days += 1;
