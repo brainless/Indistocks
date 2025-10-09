@@ -38,6 +38,11 @@ fn download_nse_equity_list() -> Result<Vec<(String, String)>, String> {
 }
 
 pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
+    // Refresh BhavCopy date range only once when Settings view is opened (if not already set)
+    if app.bhavcopy_date_range.is_none() && !app.is_downloading_bhavcopy {
+        app.bhavcopy_date_range = get_bhavcopy_date_range(&*app.db_conn.lock().unwrap()).unwrap_or(None);
+    }
+
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_space(20.0);
 
@@ -186,37 +191,45 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             }
         }
 
-        // Check for bhavcopy messages
+        // Check for bhavcopy messages - process all available messages
         if let Some(ref rx) = app.bhavcopy_receiver {
-            match rx.try_recv() {
-                Ok(message) => {
-                    match message {
-                        BhavCopyMessage::Progress(progress) => {
-                            app.bhavcopy_progress = progress;
-                        }
-                        BhavCopyMessage::Done(result) => {
-                            app.is_downloading_bhavcopy = false;
-                            app.bhavcopy_receiver = None;
-                            match result {
-                                Ok(()) => {
-                                    app.bhavcopy_status = "BhavCopy download completed successfully".to_string();
-                                    // Update date range
-                                    app.bhavcopy_date_range = get_bhavcopy_date_range(&*app.db_conn.lock().unwrap()).unwrap_or(None);
+            loop {
+                match rx.try_recv() {
+                    Ok(message) => {
+                        match message {
+                            BhavCopyMessage::Progress(progress) => {
+                                app.bhavcopy_progress = progress;
+                            }
+                            BhavCopyMessage::DateRangeUpdated(min_date, max_date) => {
+                                app.bhavcopy_date_range = Some((min_date, max_date));
+                            }
+                            BhavCopyMessage::Done(result) => {
+                                app.is_downloading_bhavcopy = false;
+                                app.bhavcopy_receiver = None;
+                                match result {
+                                    Ok(()) => {
+                                        app.bhavcopy_status = "BhavCopy download completed successfully".to_string();
+                                        // Update date range
+                                        app.bhavcopy_date_range = get_bhavcopy_date_range(&*app.db_conn.lock().unwrap()).unwrap_or(None);
+                                    }
+                                    Err(e) => {
+                                        app.bhavcopy_status = format!("Error: {}", e);
+                                    }
                                 }
-                                Err(e) => {
-                                    app.bhavcopy_status = format!("Error: {}", e);
-                                }
+                                break;
                             }
                         }
                     }
-                }
-                Err(TryRecvError::Empty) => {
-                    // Still downloading
-                }
-                Err(TryRecvError::Disconnected) => {
-                    app.is_downloading_bhavcopy = false;
-                    app.bhavcopy_receiver = None;
-                    app.bhavcopy_status = "Download thread disconnected".to_string();
+                    Err(TryRecvError::Empty) => {
+                        // No more messages
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        app.is_downloading_bhavcopy = false;
+                        app.bhavcopy_receiver = None;
+                        app.bhavcopy_status = "Download thread disconnected".to_string();
+                        break;
+                    }
                 }
             }
         }

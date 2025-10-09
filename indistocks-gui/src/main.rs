@@ -37,150 +37,54 @@ fn test_mode(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
     clear_bhavcopy_data(&conn)?;
     println!("   ✓ Data cleared\n");
 
-    // Download 5 days of data
+    // Download 5 days of data using the same function as GUI
     println!("3. Downloading 5 days of BhavCopy data...");
-    use chrono::{Utc, Datelike, Duration};
-    use std::fs;
-    use indistocks_db::get_downloads_dir;
-    use reqwest::blocking::Client;
-    use std::sync::{Arc, Mutex};
-    use csv::Reader;
+    use std::sync::{Arc, Mutex, mpsc};
+    use indistocks_db::{BhavCopyMessage, download_bhavcopy_with_limit};
 
     let conn_arc = Arc::new(Mutex::new(conn));
-    let downloads_dir = get_downloads_dir();
-    let client = Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/118.0")
-        .timeout(std::time::Duration::from_secs(15))
-        .cookie_store(true)
-        .gzip(true)
-        .build()?;
+    let (tx, rx) = mpsc::channel();
 
-    let mut current_date = Utc::now().date_naive() - Duration::days(1);
-    let mut downloaded_count = 0;
-    let target_downloads = 5;
+    // Spawn download in a thread (same as GUI)
+    let conn_clone = conn_arc.clone();
+    std::thread::spawn(move || {
+        let result = download_bhavcopy_with_limit(&conn_clone, &tx, Some(5));
+        let _ = tx.send(BhavCopyMessage::Done(result.map_err(|e| e.to_string())));
+    });
 
-    while downloaded_count < target_downloads && downloaded_count < 30 {
-        let date_str = current_date.format("%Y%m%d").to_string();
-        let year = current_date.year();
-        let month = current_date.month();
-
-        let url = format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str);
-
-        std::thread::sleep(std::time::Duration::from_millis(350));
-
-        println!("   Attempting to download: {} ({})", current_date.format("%Y-%m-%d"), url);
-
-        let response = client.get(&url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/118.0")
-            .header("Referer", "https://www.nseindia.com/")
-            .send();
-
-        match response {
-            Ok(resp) if resp.status().is_success() => {
-                // Create directory
-                let year_dir = downloads_dir.join(year.to_string());
-                let month_dir = year_dir.join(format!("{:02}", month));
-                fs::create_dir_all(&month_dir)?;
-
-                let zip_path = month_dir.join(format!("bhavcopy_{}.zip", date_str));
-                let csv_path = month_dir.join(format!("bhavcopy_{}.csv", date_str));
-
-                // Download ZIP
-                let bytes = resp.bytes()?;
-                fs::write(&zip_path, &bytes)?;
-
-                // Extract ZIP
-                let mut archive = zip::ZipArchive::new(fs::File::open(&zip_path)?)?;
-                let mut file = archive.by_index(0)?;
-                let mut csv_data = Vec::new();
-                std::io::copy(&mut file, &mut csv_data)?;
-
-                // Validate CSV
-                let csv_str = String::from_utf8_lossy(&csv_data);
-                let lines: Vec<&str> = csv_str.lines().collect();
-                if lines.len() < 2 || !lines[0].contains("TradDt") {
-                    fs::remove_file(&zip_path)?;
-                    current_date = current_date - Duration::days(1);
-                    continue;
-                }
-
-                // Save CSV
-                fs::write(&csv_path, &csv_data)?;
-                fs::remove_file(&zip_path)?;
-
-                // Parse and insert data
-                let ts = current_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
-                let conn = conn_arc.lock().unwrap();
-
-                let mut rdr = Reader::from_path(&csv_path)?;
-                let headers = rdr.headers()?.clone();
-                println!("   CSV Headers: {:?}", headers);
-
-                // Find column indices
-                let symbol_idx = headers.iter().position(|h| h == "TckrSymb").unwrap_or(1);
-                let series_idx = headers.iter().position(|h| h == "SctySrs").unwrap_or(2);
-                let open_idx = headers.iter().position(|h| h == "OpnPric").unwrap_or(4);
-                let high_idx = headers.iter().position(|h| h == "HghPric").unwrap_or(5);
-                let low_idx = headers.iter().position(|h| h == "LwPric").unwrap_or(6);
-                let close_idx = headers.iter().position(|h| h == "ClsPric").unwrap_or(7);
-                let last_idx = headers.iter().position(|h| h == "LastPric").unwrap_or(8);
-                let prev_close_idx = headers.iter().position(|h| h == "PrvsClsgPric").unwrap_or(9);
-                let volume_idx = headers.iter().position(|h| h == "TtlTradgVol").unwrap_or(10);
-                let turnover_idx = headers.iter().position(|h| h == "TtlTrfVal").unwrap_or(11);
-                let trades_idx = headers.iter().position(|h| h == "TtlNbOfTxsExctd").unwrap_or(12);
-                let isin_idx = headers.iter().position(|h| h == "ISIN").unwrap_or(13);
-
-                let mut rows: Vec<(String, String, i64, f64, f64, f64, f64, f64, f64, i64, f64, i64, String)> = Vec::new();
-                for result in rdr.records() {
-                    let record = result?;
-                    if record.len() <= symbol_idx { continue; }
-                    let sym = record.get(symbol_idx).unwrap_or("").trim().to_uppercase();
-                    if sym.is_empty() { continue; }
-                    let series = record.get(series_idx).unwrap_or("").trim().to_string();
-                    let open: f64 = record.get(open_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
-                    let high: f64 = record.get(high_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
-                    let low: f64 = record.get(low_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
-                    let close: f64 = record.get(close_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
-                    let last: f64 = record.get(last_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
-                    let prev_close: f64 = record.get(prev_close_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
-                    let volume: i64 = record.get(volume_idx).unwrap_or("0").trim().parse().unwrap_or(0);
-                    let turnover: f64 = record.get(turnover_idx).unwrap_or("0").trim().parse().unwrap_or(0.0);
-                    let trades: i64 = record.get(trades_idx).unwrap_or("0").trim().parse().unwrap_or(0);
-                    let isin = record.get(isin_idx).unwrap_or("").trim().to_string();
-                    rows.push((sym, series, ts, open, high, low, close, last, prev_close, volume, turnover, trades, isin));
-                }
-
-                for chunk in rows.chunks(100) {
-                    if chunk.is_empty() { continue; }
-                    let placeholders: Vec<String> = chunk.iter().map(|_| "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)".to_string()).collect();
-                    let query = format!("INSERT OR IGNORE INTO bhavcopy_data (symbol, series, date, open, high, low, close, last, prev_close, volume, turnover, trades, isin) VALUES {}", placeholders.join(", "));
-                    let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().flat_map(|(symbol, series, date, open, high, low, close, last, prev_close, volume, turnover, trades, isin)|
-                        vec![symbol as &dyn rusqlite::ToSql, series as &dyn rusqlite::ToSql, date as &dyn rusqlite::ToSql,
-                             open as &dyn rusqlite::ToSql, high as &dyn rusqlite::ToSql, low as &dyn rusqlite::ToSql,
-                             close as &dyn rusqlite::ToSql, last as &dyn rusqlite::ToSql, prev_close as &dyn rusqlite::ToSql,
-                             volume as &dyn rusqlite::ToSql, turnover as &dyn rusqlite::ToSql, trades as &dyn rusqlite::ToSql,
-                             isin as &dyn rusqlite::ToSql]).collect();
-                    conn.execute(&query, rusqlite::params_from_iter(params))?;
-                }
-
-                fs::remove_file(&csv_path)?;
-
-                downloaded_count += 1;
-                println!("   ✓ Downloaded and processed: {}", current_date.format("%Y-%m-%d"));
+    // Process messages (same as GUI would)
+    loop {
+        match rx.recv() {
+            Ok(BhavCopyMessage::Progress(msg)) => {
+                println!("   {}", msg);
             }
-            _ => {
-                println!("   ✗ Not available: {}", current_date.format("%Y-%m-%d"));
+            Ok(BhavCopyMessage::DateRangeUpdated(_min, _max)) => {
+                // Date range updated, GUI would update display here
+            }
+            Ok(BhavCopyMessage::Done(result)) => {
+                match result {
+                    Ok(()) => println!("   ✓ Download completed successfully"),
+                    Err(e) => println!("   ✗ Download error: {}", e),
+                }
+                break;
+            }
+            Err(_) => {
+                println!("   ✗ Channel disconnected");
+                break;
             }
         }
-
-        current_date = current_date - Duration::days(1);
     }
 
+    // Give a moment for any pending operations to complete
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Count how many files were actually downloaded
+    let conn = conn_arc.lock().unwrap();
+    let downloaded_count: i64 = conn.query_row("SELECT COUNT(DISTINCT date) FROM bhavcopy_data", [], |row| row.get(0))?;
     println!("   ✓ Downloaded {} days of data\n", downloaded_count);
 
     // Query data for the test symbol
     println!("4. Querying data for symbol '{}'...", symbol);
-    let conn = conn_arc.lock().unwrap();
 
     let total_rows: i64 = conn.query_row("SELECT COUNT(*) FROM bhavcopy_data", [], |row| row.get(0))?;
     println!("   Total rows in bhavcopy_data: {}", total_rows);

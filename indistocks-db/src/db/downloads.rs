@@ -185,32 +185,55 @@ pub fn get_download_records(conn: &Connection) -> Result<Vec<DownloadRecord>, Bo
 }
 
 pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>, tx: &std::sync::mpsc::Sender<crate::BhavCopyMessage>) -> Result<(), Box<dyn std::error::Error>> {
+    download_bhavcopy_with_limit(db_conn, tx, None)
+}
+
+pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>, tx: &std::sync::mpsc::Sender<crate::BhavCopyMessage>, max_files: Option<usize>) -> Result<(), Box<dyn std::error::Error>> {
     let client = create_http_client();
     let downloads_dir = get_downloads_dir();
 
-    // Get last downloaded date for bhavcopy (symbol IS NULL)
-    let last_date: Option<i64> = {
+    // Get the earliest date in bhavcopy_data to download older data
+    let earliest_data_date: Option<i64> = {
         let conn = db_conn.lock().unwrap();
         conn.query_row(
-            "SELECT MAX(to_date) FROM nse_downloads WHERE symbol IS NULL AND status = 'completed'",
+            "SELECT MIN(date) FROM bhavcopy_data",
             [],
             |row| row.get(0),
         ).unwrap_or(None)
     };
 
-    let start_date = if let Some(ts) = last_date {
+    let start_date = if let Some(ts) = earliest_data_date {
+        // If we have data, start from the day before the earliest date
         chrono::DateTime::from_timestamp(ts, 0)
-            .map(|dt| dt.naive_utc().date())
-            .unwrap_or_else(|| chrono::Utc::now().date_naive())
+            .map(|dt| dt.naive_utc().date() - chrono::Duration::days(1))
+            .unwrap_or_else(|| chrono::Utc::now().date_naive() - chrono::Duration::days(1))
     } else {
-        chrono::Utc::now().date_naive() - chrono::Duration::days(1) // yesterday
+        // No data yet, start from yesterday
+        chrono::Utc::now().date_naive() - chrono::Duration::days(1)
     };
 
     let end_date = start_date - chrono::Duration::days(365); // 12 months back
 
-    let mut current_date = start_date;
+    let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+        "Downloading BhavCopy data from {} to {}",
+        end_date.format("%Y-%m-%d"),
+        start_date.format("%Y-%m-%d")
+    )));
 
-    while current_date >= end_date {
+    let mut current_date = start_date;
+    let mut downloaded_count = 0;
+    let mut attempts = 0;
+    let max_attempts = 30; // Maximum days to try when looking for files
+
+    while current_date >= end_date && attempts < max_attempts {
+        // Check if we've reached the download limit
+        if let Some(limit) = max_files {
+            if downloaded_count >= limit {
+                println!("Reached download limit of {} files", limit);
+                break;
+            }
+        }
+        attempts += 1;
         let date_str = current_date.format("%Y%m%d").to_string();
         let year = current_date.year();
         let month = current_date.month();
@@ -233,18 +256,31 @@ pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Con
         rate_limit_delay();
 
         println!("Downloading: {}", url);
+        let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+            "Downloading {} (file {} of ~365)",
+            current_date.format("%Y-%m-%d"),
+            downloaded_count + 1
+        )));
 
         let response = client
             .get(&url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/118.0")
             .header("Referer", "https://www.nseindia.com/get-quotes/equity?symbol=HDFCBANK")
-            .send()?;
+            .send();
 
-        if !response.status().is_success() {
-            // Skip if not available (holiday or error)
-            current_date = current_date - chrono::Duration::days(1);
-            continue;
-        }
+        let response = match response {
+            Ok(resp) if resp.status().is_success() => resp,
+            Ok(resp) => {
+                println!("   HTTP error {}: {}", resp.status(), current_date.format("%Y-%m-%d"));
+                current_date = current_date - chrono::Duration::days(1);
+                continue;
+            }
+            Err(e) => {
+                println!("   Network error: {} for {}", e, current_date.format("%Y-%m-%d"));
+                current_date = current_date - chrono::Duration::days(1);
+                continue;
+            }
+        };
 
         // Create directory
         let year_dir = downloads_dir.join(year.to_string());
@@ -286,6 +322,10 @@ pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Con
 
         // Parse CSV and insert into bhavcopy_data
         println!("Processing: {}", csv_path.display());
+        let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+            "Processing {} data into database...",
+            current_date.format("%Y-%m-%d")
+        )));
         {
             let conn = db_conn.lock().unwrap();
             let mut rdr = Reader::from_path(&csv_path)?;
@@ -342,7 +382,20 @@ pub fn download_bhavcopy(db_conn: &std::sync::Arc<std::sync::Mutex<rusqlite::Con
         fs::remove_file(&csv_path)?;
 
         // Send progress
-        let _ = tx.send(crate::BhavCopyMessage::Progress(format!("Downloaded {}", date_str)));
+        downloaded_count += 1;
+        let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+            "Completed {} ({} files processed)",
+            current_date.format("%Y-%m-%d"),
+            downloaded_count
+        )));
+
+        // Send updated date range
+        {
+            let conn = db_conn.lock().unwrap();
+            if let Ok(Some((min_date, max_date))) = get_bhavcopy_date_range(&*conn) {
+                let _ = tx.send(crate::BhavCopyMessage::DateRangeUpdated(min_date, max_date));
+            }
+        }
 
         current_date = current_date - chrono::Duration::days(1);
     }
