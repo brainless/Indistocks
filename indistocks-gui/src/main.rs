@@ -63,7 +63,6 @@ fn test_mode(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
         let date_str = current_date.format("%Y%m%d").to_string();
         let year = current_date.year();
         let month = current_date.month();
-        let day = current_date.day();
 
         let url = format!("https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{}_F_0000.csv.zip", date_str);
 
