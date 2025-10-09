@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --package indistocks
+
+      - name: Strip binary
+        run: strip target/release/indistocks
+
+      - name: Package binary
+        run: |
+          mkdir -p indistocks-linux
+          cp target/release/indistocks indistocks-linux/
+          cp README.md indistocks-linux/ 2>/dev/null || echo "No README found"
+          tar czf indistocks-linux-x86_64.tar.gz indistocks-linux/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: indistocks-linux-x86_64
+          path: indistocks-linux-x86_64.tar.gz
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          # Get the previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${{ github.ref_name }}$" | head -n 1)
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "First release - including all commits"
+            COMMITS=$(git log --pretty=format:"- %s (%h)" ${{ github.ref_name }})
+          else
+            echo "Generating changelog from $PREV_TAG to ${{ github.ref_name }}"
+            COMMITS=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..${{ github.ref_name }})
+          fi
+
+          # Write to file to preserve newlines
+          cat > release_notes.md <<EOF
+          ## Changes
+
+          $COMMITS
+
+          ## Download
+
+          Download the appropriate binary for your platform below.
+
+          ### Linux
+
+          Extract the tarball and run the \`indistocks\` binary.
+          EOF
+
+          cat release_notes.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*.tar.gz
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
