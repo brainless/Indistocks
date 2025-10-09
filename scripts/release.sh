@@ -120,7 +120,8 @@ if [ -z "$COMMITS" ]; then
 fi
 
 # Display the changelog
-warning "\nChangelog:"
+echo ""
+warning "Changelog:"
 echo "$COMMITS"
 echo ""
 
@@ -160,7 +161,10 @@ $COMMITS"
 
 git tag -a "v$NEW_VERSION" -m "$TAG_MESSAGE"
 
-success "\nRelease v$NEW_VERSION created successfully!"
-info "\nTo publish the release, run:"
+echo ""
+success "Release v$NEW_VERSION created successfully!"
+echo ""
+info "To publish the release, run:"
 info "  git push origin main --tags"
-info "\nThis will trigger the GitHub Actions workflow to build and publish the release."
+echo ""
+info "This will trigger the GitHub Actions workflow to build and publish the release."
