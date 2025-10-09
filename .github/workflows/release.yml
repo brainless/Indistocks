@@ -62,9 +62,54 @@ jobs:
           name: indistocks-linux-x86_64
           path: indistocks-linux-x86_64.tar.gz
 
+  build-windows:
+    name: Build Windows Binary
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --package indistocks
+
+      - name: Package binary
+        run: |
+          mkdir indistocks-windows
+          copy target\release\indistocks.exe indistocks-windows\
+          if exist README.md copy README.md indistocks-windows\
+          tar -a -cf indistocks-windows-x86_64.zip indistocks-windows
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: indistocks-windows-x86_64
+          path: indistocks-windows-x86_64.zip
+
   create-release:
     name: Create GitHub Release
-    needs: build-linux
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -106,7 +151,16 @@ jobs:
 
           ### Linux
 
-          Extract the tarball and run the \`indistocks\` binary.
+          Extract the tarball and run the \`indistocks\` binary:
+          \`\`\`bash
+          tar xzf indistocks-linux-x86_64.tar.gz
+          cd indistocks-linux
+          ./indistocks
+          \`\`\`
+
+          ### Windows
+
+          Extract the zip file and run \`indistocks.exe\`.
           EOF
 
           cat release_notes.md
@@ -114,7 +168,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
           body_path: release_notes.md
           draft: false
           prerelease: false
