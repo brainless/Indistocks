@@ -1,4 +1,4 @@
-use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, validate_download_records, get_bhavcopy_date_range, search_nse_symbols, StockData};
+use indistocks_db::{Connection, RecentlyViewed, get_recently_viewed, record_recently_viewed, validate_download_records, get_bhavcopy_date_range, search_nse_symbols, StockData, get_stock_data_in_range};
 use std::sync::{Arc, Mutex};
 use crate::ui::{top_nav, sidebar, main_content, settings};
 use chrono::NaiveDate;
@@ -32,6 +32,9 @@ pub struct IndistocksApp {
     // Plotting
     pub selected_symbol: Option<String>,
     pub plot_data: Vec<(NaiveDate, f64)>, // date, close price
+    pub plot_loaded_range: Option<(NaiveDate, NaiveDate)>, // Track what data is currently loaded
+    pub plot_earliest_available: Option<NaiveDate>, // Earliest date available in DB for current symbol
+    pub plot_loading_in_progress: bool, // Prevent concurrent loads
     // Search caching
     pub last_search_query: String,
     pub search_results: Vec<String>,
@@ -80,6 +83,9 @@ impl IndistocksApp {
             nse_list_receiver: None,
             selected_symbol: None,
             plot_data: Vec::new(),
+            plot_loaded_range: None,
+            plot_earliest_available: None,
+            plot_loading_in_progress: false,
             last_search_query: String::new(),
             search_results: Vec::new(),
             stocks_price_from: String::new(),
@@ -118,41 +124,123 @@ impl IndistocksApp {
         self.refresh_recently_viewed();
 
         self.plot_data.clear();
+        self.plot_loaded_range = None;
+        self.plot_earliest_available = None;
+        self.plot_loading_in_progress = false;
 
         let conn = self.db_conn.lock().unwrap();
 
-        // Debug: Check total rows in bhavcopy_data
-        let total_rows: i64 = conn.query_row("SELECT COUNT(*) FROM bhavcopy_data", [], |row| row.get(0)).unwrap_or(0);
-        println!("Total rows in bhavcopy_data: {}", total_rows);
+        // Get the earliest and latest dates available for this symbol
+        let earliest_date: Option<i64> = conn.query_row(
+            "SELECT MIN(date) FROM bhavcopy_data WHERE symbol = ? AND series = 'EQ'",
+            [symbol],
+            |row| row.get(0)
+        ).ok().flatten();
 
-        // Debug: Check rows for this symbol (any series)
-        let symbol_rows: i64 = conn.query_row("SELECT COUNT(*) FROM bhavcopy_data WHERE symbol = ?", [symbol], |row| row.get(0)).unwrap_or(0);
-        println!("Rows for symbol '{}': {}", symbol, symbol_rows);
+        let latest_date: Option<i64> = conn.query_row(
+            "SELECT MAX(date) FROM bhavcopy_data WHERE symbol = ? AND series = 'EQ'",
+            [symbol],
+            |row| row.get(0)
+        ).ok().flatten();
 
-        // Debug: Check what series exist for this symbol
-        let mut series_stmt = conn.prepare("SELECT DISTINCT series FROM bhavcopy_data WHERE symbol = ?").unwrap();
-        let series_list: Vec<String> = series_stmt.query_map([symbol], |row| row.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap_or_default();
-        println!("Series available for '{}': {:?}", symbol, series_list);
+        if let (Some(earliest_ts), Some(latest_ts)) = (earliest_date, latest_date) {
+            let earliest = chrono::DateTime::from_timestamp(earliest_ts, 0)
+                .unwrap()
+                .naive_utc()
+                .date();
+            let latest = chrono::DateTime::from_timestamp(latest_ts, 0)
+                .unwrap()
+                .naive_utc()
+                .date();
 
-        // Debug: Sample some symbols from the database
-        let mut sample_stmt = conn.prepare("SELECT DISTINCT symbol FROM bhavcopy_data LIMIT 5").unwrap();
-        let sample_symbols: Vec<String> = sample_stmt.query_map([], |row| row.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap_or_default();
-        println!("Sample symbols in DB: {:?}", sample_symbols);
+            self.plot_earliest_available = Some(earliest);
 
-        let mut stmt = conn.prepare("SELECT date, close FROM bhavcopy_data WHERE symbol = ? AND series = 'EQ' ORDER BY date").unwrap();
-        let rows = stmt.query_map([symbol], |row| {
-            let ts: i64 = row.get(0).unwrap();
-            let date = chrono::DateTime::from_timestamp(ts, 0).unwrap().naive_utc().date();
-            let close: f64 = row.get(1).unwrap();
-            Ok((date, close))
-        }).unwrap();
-        for row in rows {
-            if let Ok((date, close)) = row {
-                self.plot_data.push((date, close));
+            // Count total data points available
+            let total_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM bhavcopy_data WHERE symbol = ? AND series = 'EQ'",
+                [symbol],
+                |row| row.get(0)
+            ).unwrap_or(0);
+
+            println!("Data available from {} to {} ({} days span, {} data points in DB)",
+                earliest, latest, (latest - earliest).num_days(), total_count);
+
+            // Load last 3 months of data initially
+            let start = latest - chrono::Duration::days(90);
+            let load_from = if start < earliest { earliest } else { start };
+
+            match get_stock_data_in_range(&conn, symbol, load_from, latest) {
+                Ok(data) => {
+                    self.plot_data = data;
+                    if !self.plot_data.is_empty() {
+                        let actual_start = self.plot_data.first().unwrap().0;
+                        let actual_end = self.plot_data.last().unwrap().0;
+                        self.plot_loaded_range = Some((actual_start, actual_end));
+                        println!("Loaded {} data points for {} (range: {} to {})",
+                            self.plot_data.len(), symbol, actual_start, actual_end);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to load plot data: {}", e);
+                }
             }
+        } else {
+            println!("No data available for symbol: {}", symbol);
         }
-        println!("Loaded {} data points for {}", self.plot_data.len(), symbol);
-        println!("Total data points loaded: {}", self.plot_data.len());
+    }
+
+    /// Load additional data when user scrolls/drags to view earlier dates
+    pub fn load_earlier_data(&mut self, symbol: &str, days_to_load: i64) {
+        // Prevent concurrent loads
+        if self.plot_loading_in_progress {
+            return;
+        }
+
+        if let (Some((current_start, current_end)), Some(earliest_available)) =
+            (self.plot_loaded_range, self.plot_earliest_available) {
+
+            // Check if we've already loaded all available data
+            if current_start <= earliest_available {
+                println!("Already at earliest available date: {}", earliest_available);
+                return;
+            }
+
+            self.plot_loading_in_progress = true;
+
+            let new_start = current_start - chrono::Duration::days(days_to_load);
+            let new_end = current_start - chrono::Duration::days(1);
+
+            // Don't go before the earliest available date
+            let load_from = if new_start < earliest_available {
+                earliest_available
+            } else {
+                new_start
+            };
+
+            let conn = self.db_conn.lock().unwrap();
+            match get_stock_data_in_range(&conn, symbol, load_from, new_end) {
+                Ok(mut new_data) => {
+                    if !new_data.is_empty() {
+                        println!("Loading {} earlier data points (range: {} to {})",
+                            new_data.len(), load_from, new_end);
+
+                        // Prepend new data to existing data
+                        new_data.extend(self.plot_data.drain(..));
+                        self.plot_data = new_data;
+
+                        // Update the loaded range
+                        self.plot_loaded_range = Some((self.plot_data.first().unwrap().0, current_end));
+                    } else {
+                        println!("No earlier data available in range {} to {}", load_from, new_end);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to load earlier data: {}", e);
+                }
+            }
+
+            self.plot_loading_in_progress = false;
+        }
     }
 }
 

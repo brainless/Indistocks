@@ -375,6 +375,37 @@ pub struct StockData {
     pub range_high: f64,
 }
 
+/// Get stock price data for a specific symbol within a date range
+/// Returns Vec of (date, close_price) tuples ordered by date
+pub fn get_stock_data_in_range(
+    conn: &Connection,
+    symbol: &str,
+    start_date: chrono::NaiveDate,
+    end_date: chrono::NaiveDate
+) -> Result<Vec<(chrono::NaiveDate, f64)>> {
+    let start_ts = start_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+    let end_ts = end_date.and_hms_opt(23, 59, 59).unwrap().and_utc().timestamp();
+
+    let mut stmt = conn.prepare(
+        "SELECT date, close FROM bhavcopy_data
+         WHERE symbol = ? AND series = 'EQ'
+         AND date >= ? AND date <= ?
+         ORDER BY date"
+    )?;
+
+    let rows = stmt.query_map(params![symbol, start_ts, end_ts], |row| {
+        let ts: i64 = row.get(0)?;
+        let date = chrono::DateTime::from_timestamp(ts, 0)
+            .unwrap()
+            .naive_utc()
+            .date();
+        let close: f64 = row.get(1)?;
+        Ok((date, close))
+    })?;
+
+    rows.collect()
+}
+
 pub fn get_all_stocks_with_metrics(conn: &Connection, price_from: Option<f64>, price_to: Option<f64>, range_days: i64) -> Result<Vec<StockData>> {
     // Get the latest date we have data for
     let latest_date: Option<i64> = conn.query_row(
