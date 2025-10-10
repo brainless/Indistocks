@@ -1,4 +1,4 @@
-use crate::app::IndistocksApp;
+use crate::app::{IndistocksApp, TimeRange};
 use chrono::{Datelike, Duration, NaiveDate};
 
 
@@ -23,8 +23,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             let (x_fmt, should_filter_ticks) = get_date_format_and_filter(days_diff);
             let x_fmt_clone = x_fmt.clone();
 
-            // Plot the data - use symbol in ID to reset view when switching stocks
-            let plot = egui_plot::Plot::new(format!("price_plot_{}", symbol))
+            // Plot the data - use symbol and time range in ID to reset view when switching stocks or time ranges
+            let mut plot = egui_plot::Plot::new(format!("price_plot_{}_{}", symbol, app.selected_time_range.label()))
                 .height(600.0)
                 .legend(egui_plot::Legend::default())
                 .allow_zoom([true, false])  // Allow horizontal zoom only
@@ -38,6 +38,12 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
                         format_timestamp_to_date(value.x, &x_fmt_clone),
                         value.y)
                 });
+
+            // Reset plot view if needed (when changing time range or loading new stock)
+            if app.plot_needs_reset {
+                plot = plot.reset();
+                app.plot_needs_reset = false;
+            }
 
             let response = plot.show(ui, |plot_ui| {
                 let points: egui_plot::PlotPoints = app.plot_data
@@ -98,10 +104,40 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             }
         }
 
-        if ui.button("Back").clicked() {
-            app.selected_symbol = None;
-            app.plot_data.clear();
-        }
+        // Horizontal layout for Back button and time range buttons
+        ui.horizontal(|ui| {
+            if ui.button("Back").clicked() {
+                app.selected_symbol = None;
+                app.plot_data.clear();
+            }
+
+            // Add spacing to push time range buttons to the right
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Time range buttons (in reverse order because of right_to_left layout)
+                let time_ranges = [
+                    TimeRange::All,
+                    TimeRange::FiveYears,
+                    TimeRange::OneYear,
+                    TimeRange::SixMonths,
+                    TimeRange::ThreeMonths,
+                    TimeRange::OneMonth,
+                    TimeRange::FiveDays,
+                ];
+
+                for time_range in time_ranges.iter().rev() {
+                    let is_selected = app.selected_time_range == *time_range;
+                    let button = if is_selected {
+                        egui::Button::new(time_range.label()).fill(ui.style().visuals.selection.bg_fill)
+                    } else {
+                        egui::Button::new(time_range.label())
+                    };
+
+                    if ui.add(button).clicked() {
+                        app.change_time_range(*time_range);
+                    }
+                }
+            });
+        });
     } else if !app.search_query.is_empty() {
         // Show search results
         ui.heading("Search Results");

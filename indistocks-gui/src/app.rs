@@ -13,6 +13,43 @@ pub enum View {
     Logs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TimeRange {
+    FiveDays,
+    OneMonth,
+    ThreeMonths,
+    SixMonths,
+    OneYear,
+    FiveYears,
+    All,
+}
+
+impl TimeRange {
+    pub fn to_days(&self) -> Option<i64> {
+        match self {
+            TimeRange::FiveDays => Some(5),
+            TimeRange::OneMonth => Some(30),
+            TimeRange::ThreeMonths => Some(90),
+            TimeRange::SixMonths => Some(180),
+            TimeRange::OneYear => Some(365),
+            TimeRange::FiveYears => Some(365 * 5),
+            TimeRange::All => None, // None means load all data
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            TimeRange::FiveDays => "5D",
+            TimeRange::OneMonth => "1M",
+            TimeRange::ThreeMonths => "3M",
+            TimeRange::SixMonths => "6M",
+            TimeRange::OneYear => "1Y",
+            TimeRange::FiveYears => "5Y",
+            TimeRange::All => "All",
+        }
+    }
+}
+
 pub struct IndistocksApp {
     pub current_view: View,
     pub db_conn: Arc<Mutex<Connection>>,
@@ -35,6 +72,8 @@ pub struct IndistocksApp {
     pub plot_loaded_range: Option<(NaiveDate, NaiveDate)>, // Track what data is currently loaded
     pub plot_earliest_available: Option<NaiveDate>, // Earliest date available in DB for current symbol
     pub plot_loading_in_progress: bool, // Prevent concurrent loads
+    pub selected_time_range: TimeRange, // Current time range filter for the plot
+    pub plot_needs_reset: bool, // Flag to reset plot view on next render
     // Search caching
     pub last_search_query: String,
     pub search_results: Vec<String>,
@@ -86,6 +125,8 @@ impl IndistocksApp {
             plot_loaded_range: None,
             plot_earliest_available: None,
             plot_loading_in_progress: false,
+            selected_time_range: TimeRange::ThreeMonths, // Default to 3 months
+            plot_needs_reset: false,
             last_search_query: String::new(),
             search_results: Vec::new(),
             stocks_price_from: String::new(),
@@ -127,6 +168,7 @@ impl IndistocksApp {
         self.plot_loaded_range = None;
         self.plot_earliest_available = None;
         self.plot_loading_in_progress = false;
+        self.plot_needs_reset = true; // Reset plot view when loading new stock
 
         let conn = self.db_conn.lock().unwrap();
 
@@ -165,9 +207,14 @@ impl IndistocksApp {
             println!("Data available from {} to {} ({} days span, {} data points in DB)",
                 earliest, latest, (latest - earliest).num_days(), total_count);
 
-            // Load last 3 months of data initially
-            let start = latest - chrono::Duration::days(90);
-            let load_from = if start < earliest { earliest } else { start };
+            // Load data based on selected time range
+            let load_from = match self.selected_time_range.to_days() {
+                Some(days) => {
+                    let start = latest - chrono::Duration::days(days);
+                    if start < earliest { earliest } else { start }
+                },
+                None => earliest, // Load all data
+            };
 
             match get_stock_data_in_range(&conn, symbol, load_from, latest) {
                 Ok(data) => {
@@ -240,6 +287,22 @@ impl IndistocksApp {
             }
 
             self.plot_loading_in_progress = false;
+        }
+    }
+
+    /// Change the time range and reload data for the current symbol
+    pub fn change_time_range(&mut self, time_range: TimeRange) {
+        self.selected_time_range = time_range;
+
+        // Reset plot state to ensure graph resets
+        self.plot_data.clear();
+        self.plot_loaded_range = None;
+        self.plot_loading_in_progress = false;
+        self.plot_needs_reset = true; // Reset plot view when changing time range
+
+        // Reload the data if a symbol is selected
+        if let Some(symbol) = &self.selected_symbol.clone() {
+            self.load_plot_data(symbol);
         }
     }
 }
