@@ -2,7 +2,7 @@
 
 A cross-platform desktop GUI application for viewing and analyzing historical data for Indian stocks from NSE (National Stock Exchange).
 
-![Downloaded Stocks data shown in grid](/assets/screenshots/pre_mvp/pre_MVP_Stocks_Grid.png "Downloaded Stocks data shown in grid")
+![Walkthrough of Indistocks 0.6.2](/assets/screenshots/0_6_2/Indistocks_0_6_2_optimized.gif "Walkthrough of Indistocks 0.6.2")
 
 ## Features
 
