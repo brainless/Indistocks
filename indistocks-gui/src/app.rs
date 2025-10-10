@@ -201,7 +201,7 @@ impl IndistocksApp {
 
             // Check if we've already loaded all available data
             if current_start <= earliest_available {
-                println!("Already at earliest available date: {}", earliest_available);
+                // Already at the earliest available data - no need to log repeatedly
                 return;
             }
 

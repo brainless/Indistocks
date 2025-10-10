@@ -23,13 +23,13 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
             let (x_fmt, should_filter_ticks) = get_date_format_and_filter(days_diff);
             let x_fmt_clone = x_fmt.clone();
 
-            // Plot the data
-            let plot = egui_plot::Plot::new("price_plot")
+            // Plot the data - use symbol in ID to reset view when switching stocks
+            let plot = egui_plot::Plot::new(format!("price_plot_{}", symbol))
                 .height(600.0)
                 .legend(egui_plot::Legend::default())
                 .allow_zoom([true, false])  // Allow horizontal zoom only
                 .allow_drag([true, false])  // Allow horizontal drag only
-                .allow_scroll([true, false])  // Allow horizontal scroll only
+                .allow_scroll([true, false])  // Allow horizontal scroll for zooming only
                 .x_axis_formatter(move |mark, _range| {
                     format_timestamp_to_date(mark.value, &x_fmt)
                 })
@@ -57,32 +57,43 @@ pub fn render(ui: &mut egui::Ui, app: &mut IndistocksApp) {
                 }
             });
 
-            // Check if user is near the left edge of the visible range and load more data
-            let plot_bounds = response.transform;
-            let plot_bounds_range = plot_bounds.bounds();
+            // Only check for loading more data if user is actively interacting with the plot
+            // This prevents automatic cascading loads when the plot first renders
+            if response.response.dragged() || (response.response.hovered() && ui.input(|i| i.raw_scroll_delta.x != 0.0)) {
+                let plot_bounds = response.transform;
+                let plot_bounds_range = plot_bounds.bounds();
 
-            // Get the visible X range (timestamps)
-            let view_start_ts = plot_bounds_range.min()[0];
-            let view_end_ts = plot_bounds_range.max()[0];
+                // Get the visible X range (timestamps)
+                let view_start_ts = plot_bounds_range.min()[0];
+                let view_end_ts = plot_bounds_range.max()[0];
 
-            // Get the earliest and latest loaded data timestamps
-            if let (Some((earliest_date, _)), Some((latest_date, _))) =
-                (app.plot_data.first(), app.plot_data.last()) {
+                // Get the earliest and latest loaded data timestamps
+                if let (Some((earliest_date, _)), Some((latest_date, _))) =
+                    (app.plot_data.first(), app.plot_data.last()) {
 
-                let earliest_ts = earliest_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() as f64;
-                let _latest_ts = latest_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() as f64;
+                    let earliest_ts = earliest_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() as f64;
+                    let _latest_ts = latest_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() as f64;
 
-                // Calculate visible range in days
-                let visible_range_days = (view_end_ts - view_start_ts) / (24.0 * 3600.0);
+                    // Calculate visible range in days
+                    let visible_range_days = (view_end_ts - view_start_ts) / (24.0 * 3600.0);
 
-                // If we're viewing within 20% of the visible range from the earliest loaded data, load more
-                let threshold = visible_range_days * 0.2 * 24.0 * 3600.0; // 20% of visible range in seconds
+                    // If we're viewing within 20% of the visible range from the earliest loaded data, load more
+                    let threshold = visible_range_days * 0.2 * 24.0 * 3600.0; // 20% of visible range in seconds
 
-                if view_start_ts < (earliest_ts + threshold) {
-                    println!("Loading earlier data: view_start={}, earliest={}, threshold={}",
-                        view_start_ts, earliest_ts, threshold);
-                    // Load 90 more days of data
-                    app.load_earlier_data(symbol, 90);
+                    // Only attempt to load if:
+                    // 1. We're viewing near the earliest loaded data
+                    // 2. We're not already loading
+                    // 3. We haven't reached the earliest available data
+                    if view_start_ts < (earliest_ts + threshold) && !app.plot_loading_in_progress {
+                        if let Some(earliest_available) = app.plot_earliest_available {
+                            if earliest_date > &earliest_available {
+                                println!("Loading earlier data: view_start={}, earliest={}, threshold={}",
+                                    view_start_ts, earliest_ts, threshold);
+                                // Load 90 more days of data
+                                app.load_earlier_data(symbol, 90);
+                            }
+                        }
+                    }
                 }
             }
         }
