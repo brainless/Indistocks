@@ -418,30 +418,53 @@ pub fn download_bhavcopy_with_limit(db_conn: &std::sync::Arc<std::sync::Mutex<ru
     let client = create_http_client();
     let downloads_dir = get_downloads_dir();
 
-    // Get the earliest date in bhavcopy_data to download older data
-    let earliest_data_date: Option<i64> = {
+    // Get both the earliest and latest dates in bhavcopy_data
+    let (earliest_data_date, latest_data_date): (Option<i64>, Option<i64>) = {
         let conn = db_conn.lock().unwrap();
         conn.query_row(
-            "SELECT MIN(date) FROM bhavcopy_data",
+            "SELECT MIN(date), MAX(date) FROM bhavcopy_data",
             [],
-            |row| row.get(0),
-        ).unwrap_or(None)
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap_or((None, None))
     };
 
+    let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+
+    // First, download future data (from latest date to yesterday)
+    if let Some(ts) = latest_data_date {
+        let latest_date = chrono::DateTime::from_timestamp(ts, 0)
+            .map(|dt| dt.naive_utc().date())
+            .unwrap_or(yesterday);
+
+        // Check if there's newer data to download
+        if latest_date < yesterday {
+            let future_start = latest_date + chrono::Duration::days(1);
+            let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
+                "Downloading recent BhavCopy data from {} to {}",
+                future_start.format("%Y-%m-%d"),
+                yesterday.format("%Y-%m-%d")
+            )));
+
+            // Download future data
+            download_bhavcopy_with_date_range(db_conn, tx, yesterday, future_start, max_files)?;
+        }
+    }
+
+    // Then, download past data (from earliest date backwards)
     let start_date = if let Some(ts) = earliest_data_date {
         // If we have data, start from the day before the earliest date
         chrono::DateTime::from_timestamp(ts, 0)
             .map(|dt| dt.naive_utc().date() - chrono::Duration::days(1))
-            .unwrap_or_else(|| chrono::Utc::now().date_naive() - chrono::Duration::days(1))
+            .unwrap_or_else(|| yesterday)
     } else {
         // No data yet, start from yesterday
-        chrono::Utc::now().date_naive() - chrono::Duration::days(1)
+        yesterday
     };
 
     let end_date = start_date - chrono::Duration::days(365); // 12 months back
 
     let _ = tx.send(crate::BhavCopyMessage::Progress(format!(
-        "Downloading BhavCopy data from {} to {}",
+        "Downloading historical BhavCopy data from {} to {}",
         end_date.format("%Y-%m-%d"),
         start_date.format("%Y-%m-%d")
     )));
